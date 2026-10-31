@@ -16,3 +16,5 @@ Swing sword or fire
 Right click or F
 Raise shield (sword) · fire (gun, bow)
 Swinging while your shield is up deals 25% less damage. Step into the blue ring in your fort to restock.
+
+Game is inspired by War of Knights
