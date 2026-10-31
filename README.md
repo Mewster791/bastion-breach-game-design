@@ -1,4 +1,4 @@
-Version 0.2
+
 
 Bastion Breach is Red vs Blue fort battle.
 
@@ -18,3 +18,10 @@ Raise shield (sword) · fire (gun, bow)
 Swinging while your shield is up deals 25% less damage. Step into the blue ring in your fort to restock.
 
 Game is inspired by War of Knights
+
+
+
+Version: 0.2
+
+Version 0.2
+Added readme add configurate things that ought to be configured.
