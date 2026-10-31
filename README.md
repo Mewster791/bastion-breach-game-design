@@ -21,7 +21,10 @@ Game is inspired by War of Knights
 
 
 
-Version: 0.2
+Current Version: 0.5
 
 Version 0.2
 Added readme add configurate things that ought to be configured. And included 21 fixes.
+
+Version 0.5
+80 fixes.
