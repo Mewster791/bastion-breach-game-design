@@ -47,3 +47,6 @@ A minor update.
 
 Version 0.60----1/11/2026
 Added a central contested city between the forts on every map, expanded rotation to 10 battlefields (1/10 chance per round), introduced two-stage city-to-fort siege pacing for longer rounds, hardened Electron & HTTP security, fixed CI workflows, fixed projectile wall-tunneling, and eliminated WebGL geometry/material memory leaks.
+
+Version 0.7----1/11/2026
+44 issues patched.
