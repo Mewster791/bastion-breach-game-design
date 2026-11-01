@@ -6,11 +6,11 @@ const inter = Inter({ subsets: ['latin'], variable: '--font-inter' })
 const cinzel = Cinzel({ subsets: ['latin'], variable: '--font-cinzel', weight: ['600', '800'] })
 
 export const metadata: Metadata = {
-  title: 'Bastion Breach: Blue vs Red',
+  title: 'Triterra Siege: Blue vs Red',
   description:
     'A third-person siege combat game across 10 battlefields. Lead the blue army through the fortified central city, fight past red defenders and crossbows, and raise your banner over the red fort.',
   openGraph: {
-    title: 'Bastion Breach: Blue vs Red',
+    title: 'Triterra Siege: Blue vs Red',
     description:
       'A third-person siege combat game across 10 battlefields. Lead the blue army through the fortified central city, fight past red defenders and crossbows, and raise your banner over the red fort.',
   },

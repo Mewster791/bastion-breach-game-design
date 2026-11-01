@@ -1,7 +1,7 @@
 {
-  "name": "bastionbreach-desktop",
+  "name": "triterrasiege-desktop",
   "version": "1.0.0",
-  "description": "Bastion Breach desktop app",
+  "description": "Triterra Siege desktop app",
   "author": "Nativize",
   "main": "main.js",
   "scripts": {
@@ -15,8 +15,8 @@
     "electron-builder": "^26.0.0"
   },
   "build": {
-    "appId": "app.lovable.bastionbreach",
-    "productName": "Bastion Breach",
+    "appId": "app.lovable.triterrasiege",
+    "productName": "Triterra Siege",
     "files": [
       "main.js",
       "app/**/*"

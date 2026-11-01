@@ -1,5 +1,5 @@
-import { BastionGame } from '@/components/game/bastion-game'
+import { TriterraGame } from '@/components/game/triterra-game'
 
 export default function Page() {
-  return <BastionGame />
+  return <TriterraGame />
 }

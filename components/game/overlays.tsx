@@ -28,7 +28,7 @@ export function StartOverlay({ s, onStart }: { s: HudSnapshot; onStart: () => vo
       <p className="text-xs font-semibold tracking-wide text-amber-300">
         Blue vs Red <span aria-hidden="true">·</span> 10 Battlefields in Rotation
       </p>
-      <h1 className="mt-2 font-display text-4xl font-extrabold tracking-wide text-balance sm:text-5xl">Bastion Breach</h1>
+      <h1 className="mt-2 font-display text-4xl font-extrabold tracking-wide text-balance sm:text-5xl">Triterra Siege</h1>
       <p className="mt-3 text-sm leading-relaxed text-white/80 text-pretty">
         Lead the blue army through the contested central city to raise your forward banner in the town square and unlock
         forward resupply. Then march on the red fort, knock out the 8 outward-facing crossbows, and hold the courtyard

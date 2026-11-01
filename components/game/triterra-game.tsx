@@ -8,7 +8,7 @@ import { EndOverlay, PausedOverlay, StartOverlay } from './overlays'
 const noopSubscribe = () => () => {}
 const nullSnapshot = () => null
 
-export function BastionGame() {
+export function TriterraGame() {
   const containerRef = useRef<HTMLDivElement>(null)
   const [engine, setEngine] = useState<GameEngine | null>(null)
 

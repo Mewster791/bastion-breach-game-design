@@ -1,4 +1,4 @@
-Bastion Breach is a Red vs Blue third-person siege battle across 10 distinct battlefields.
+Triterra Siege is a Red vs Blue third-person siege battle across 10 distinct battlefields.
 
 Each battlefield features a walled central city between the Blue and Red forts, and every round randomly selects 1 of the 10 maps (1/10 chance each):
 1. Verdant Valley (Oakhaven Market)

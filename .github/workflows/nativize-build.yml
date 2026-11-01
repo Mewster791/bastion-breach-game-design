@@ -174,7 +174,7 @@ jobs:
             )
           fi
           BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Info.plist" 2>/dev/null || true)
-          if [ -z "$BUNDLE_ID" ] || [[ "$BUNDLE_ID" == *'$('* ]]; then BUNDLE_ID="app.lovable.bastionbreach"; fi
+          if [ -z "$BUNDLE_ID" ] || [[ "$BUNDLE_ID" == *'$('* ]]; then BUNDLE_ID="app.lovable.triterrasiege"; fi
           APP_EXEC=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_PATH/Info.plist" 2>/dev/null || echo App)
           echo "Smoke testing $BUNDLE_ID from $APP_PATH"
           xcrun simctl boot "$DEVICE" || true
@@ -204,7 +204,7 @@ jobs:
           APP_PATH=$(find DerivedDataSim/Build/Products/Debug-iphonesimulator -maxdepth 1 -name '*.app' -type d | head -n 1)
           test -d "$APP_PATH"
           BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Info.plist" 2>/dev/null || true)
-          if [ -z "$BUNDLE_ID" ] || [[ "$BUNDLE_ID" == *'$('* ]]; then BUNDLE_ID="app.lovable.bastionbreach"; fi
+          if [ -z "$BUNDLE_ID" ] || [[ "$BUNDLE_ID" == *'$('* ]]; then BUNDLE_ID="app.lovable.triterrasiege"; fi
           rm -rf "../nativize-downloads/Nativized iOS Preview"
           mkdir -p "../nativize-downloads/Nativized iOS Preview"
           mkdir -p "../nativize-downloads/Nativized iOS Preview/payload"
@@ -262,7 +262,7 @@ jobs:
           APP_PATH="$(find "$HERE" -maxdepth 1 -name '*.app' -type d | head -n 1)"
           if [ ! -d "$APP_PATH" ]; then echo 'No iOS Simulator .app found after extracting the preview payload.'; exit 1; fi
           BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Info.plist" 2>/dev/null || true)"
-          if [ -z "$BUNDLE_ID" ] || [[ "$BUNDLE_ID" == *'$('* ]]; then BUNDLE_ID="app.lovable.bastionbreach"; fi
+          if [ -z "$BUNDLE_ID" ] || [[ "$BUNDLE_ID" == *'$('* ]]; then BUNDLE_ID="app.lovable.triterrasiege"; fi
           DEVICE="${1:-}"
           if [ -z "$DEVICE" ]; then
             DEVICE=$(python3 - <<'PY'
