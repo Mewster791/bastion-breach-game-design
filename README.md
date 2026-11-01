@@ -34,3 +34,6 @@ Version 0.55----31/10/2026
 
 Version 0.56----1/11/2026
 A minor update.
+
+Version 0.6----1/11/2026
+2 new maps with a 1/3 chance of a particular map being played next round.
