@@ -49,6 +49,11 @@ function createShared() {
       shieldBoss: new THREE.SphereGeometry(0.1, 10, 6),
       shieldRim: new THREE.TorusGeometry(0.42, 0.03, 6, 24),
       quiver: new THREE.CylinderGeometry(0.08, 0.07, 0.6, 8),
+      crossbowPost: new THREE.CylinderGeometry(0.18, 0.28, 1.0, 8),
+      crossbowBase: new THREE.CylinderGeometry(0.6, 0.7, 0.2, 10),
+      crossbowTiller: new THREE.BoxGeometry(0.28, 0.22, 2.2),
+      crossbowLimb: new THREE.BoxGeometry(1.3, 0.1, 0.12),
+      crossbowBolt: new THREE.CylinderGeometry(0.03, 0.03, 1.4, 6),
     },
     mat: {
       skin: std('#e0b38f', { roughness: 0.8 }),
@@ -85,7 +90,7 @@ function mesh(geo: THREE.BufferGeometry, mat: THREE.Material, x = 0, y = 0, z = 
 
 export function createSoldierModel(team: Team, isPlayer = false): SoldierModel {
   const { geo, mat } = getShared()
-  const teamMat = (team === 'blue' ? mat.blue : mat.red).clone()
+  const teamMat = team === 'blue' ? mat.blue : mat.red
   const teamDark = team === 'blue' ? mat.blueDark : mat.redDark
 
   const root = new THREE.Group()
@@ -183,20 +188,18 @@ export interface CrossbowModel {
 export function createCrossbowModel(): CrossbowModel {
   const { geo, mat } = getShared()
   const root = new THREE.Group()
-  const post = mesh(new THREE.CylinderGeometry(0.18, 0.28, 1.0, 8), mat.wood, 0, 0.5, 0)
-  root.add(post)
-  const base = mesh(new THREE.CylinderGeometry(0.6, 0.7, 0.2, 10), mat.darkSteel, 0, 0.1, 0)
-  root.add(base)
+  root.add(mesh(geo.crossbowPost, mat.wood, 0, 0.5, 0))
+  root.add(mesh(geo.crossbowBase, mat.darkSteel, 0, 0.1, 0))
   const pitch = new THREE.Group()
   pitch.position.y = 1.05
   root.add(pitch)
-  pitch.add(mesh(new THREE.BoxGeometry(0.28, 0.22, 2.2), mat.wood, 0, 0, 0.3))
+  pitch.add(mesh(geo.crossbowTiller, mat.wood, 0, 0, 0.3))
   for (const side of [-1, 1]) {
-    const limb = mesh(new THREE.BoxGeometry(1.3, 0.1, 0.12), mat.darkSteel, side * 0.65, 0, 1.25)
+    const limb = mesh(geo.crossbowLimb, mat.darkSteel, side * 0.65, 0, 1.25)
     limb.rotation.y = side * -0.35
     pitch.add(limb)
   }
-  const bolt = mesh(new THREE.CylinderGeometry(0.03, 0.03, 1.4, 6), mat.steel, 0, 0.14, 0.6)
+  const bolt = mesh(geo.crossbowBolt, mat.steel, 0, 0.14, 0.6)
   bolt.rotation.x = Math.PI / 2
   pitch.add(bolt)
   pitch.add(mesh(geo.shieldBoss, mat.red, 0, 0.18, -0.6))

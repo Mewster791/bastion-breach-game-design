@@ -1,6 +1,6 @@
 {
   "name": "Bastion Breach: Blue vs Red",
-  "description": "A third-person siege combat game. Lead the blue army, fight through red defenders and crossbows, and raise your banner over the red fort.",
+  "description": "A third-person siege combat game across 10 battlefields. Lead the blue army through the fortified central city, fight past red defenders and crossbows, and raise your banner over the red fort.",
   "requestFramePermissions": [],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"

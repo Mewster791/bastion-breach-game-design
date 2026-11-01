@@ -6,6 +6,10 @@ import {
   BLUE_Z,
   CAPTURE_RADIUS,
   CAPTURE_TIME,
+  CITY_CAPTURE_RADIUS,
+  CITY_CAPTURE_TIME,
+  CITY_HALF_Z,
+  CITY_Z,
   CROSSBOW_STATS,
   FORT_HALF,
   GATE_HALF,
@@ -34,6 +38,7 @@ export interface HudSnapshot {
   state: GameState
   mapId: MapId
   mapName: string
+  cityName: string
   mapSubtitle: string
   hp: number
   maxHp: number
@@ -44,6 +49,9 @@ export interface HudSnapshot {
   healing: number | null
   blocking: boolean
   running: boolean
+  cityCaptured: boolean
+  cityCapture: number
+  cityCaptureStatus: CaptureStatus
   capture: number
   captureStatus: CaptureStatus
   redAlive: number
@@ -220,9 +228,16 @@ export class GameEngine {
   private damageAt = 0
   private hitAt = 0
   private killAt = 0
+
+  private cityCaptured = false
+  private cityCapture = 0
+  private cityCaptureStatus: CaptureStatus = 'idle'
+  private fortLockWarnAt = 0
+
   private capture = 0
   private captureStatus: CaptureStatus = 'idle'
   private reinforceTimer = BLUE_STATS.interval
+  private redReinforceTimer = RED_STATS.reinforceInterval
   private resupplyTimer = 0
   private elapsed = 0
   private insideRedFort = false
@@ -250,9 +265,13 @@ export class GameEngine {
   private flashMat = new THREE.MeshBasicMaterial({ color: '#ffe08a', transparent: true })
 
   private ray = new THREE.Ray()
+  private projRay = new THREE.Ray()
   private tmp = new THREE.Vector3()
   private tmp2 = new THREE.Vector3()
   private tmp3 = new THREE.Vector3()
+  private tmp4 = new THREE.Vector3()
+  private tmp5 = new THREE.Vector3()
+  private navTmp = new THREE.Vector3()
   private camRight = new THREE.Vector3()
   private camShoulder = new THREE.Vector3()
   private camBack = new THREE.Vector3()
@@ -285,19 +304,19 @@ export class GameEngine {
     pmrem.dispose()
     roomEnv.dispose()
 
-    this.camera = new THREE.PerspectiveCamera(65, container.clientWidth / container.clientHeight, 0.1, 1200)
+    this.camera = new THREE.PerspectiveCamera(65, container.clientWidth / container.clientHeight, 0.1, 1300)
 
     this.hemi = new THREE.HemisphereLight('#bcd8ff', '#5b6b3a', 0.85)
     this.scene.add(this.hemi)
     this.sun = new THREE.DirectionalLight('#fff0d6', 2.6)
     this.sun.castShadow = !this.isSoftwareGl
     this.sun.shadow.mapSize.set(2048, 2048)
-    this.sun.shadow.camera.left = -55
-    this.sun.shadow.camera.right = 55
-    this.sun.shadow.camera.top = 55
-    this.sun.shadow.camera.bottom = -55
+    this.sun.shadow.camera.left = -65
+    this.sun.shadow.camera.right = 65
+    this.sun.shadow.camera.top = 65
+    this.sun.shadow.camera.bottom = -65
     this.sun.shadow.camera.near = 10
-    this.sun.shadow.camera.far = 320
+    this.sun.shadow.camera.far = 340
     this.sun.shadow.bias = -0.0004
     this.sun.shadow.normalBias = 0.04
     this.sun.shadow.radius = 3
@@ -339,6 +358,24 @@ export class GameEngine {
     window.clearTimeout(this.timer)
     this.unbindInput()
     if (document.pointerLockElement === this.renderer.domElement) document.exitPointerLock()
+    for (const e of this.effects) {
+      if (e.object instanceof THREE.Line) {
+        e.object.geometry.dispose()
+        ;(e.object.material as THREE.Material).dispose()
+      }
+    }
+    this.effects = []
+    this.arrowGeo.dispose()
+    this.boltGeo.dispose()
+    this.tipGeo.dispose()
+    this.particleGeo.dispose()
+    this.flashGeo.dispose()
+    this.arrowMat.dispose()
+    this.boltMat.dispose()
+    this.bloodMat.dispose()
+    this.sparkMat.dispose()
+    this.dustMat.dispose()
+    this.flashMat.dispose()
     if (this.world) this.world.dispose()
     if (this.envTex) this.envTex.dispose()
     this.renderer.dispose()
@@ -364,7 +401,7 @@ export class GameEngine {
   }
 
   private reset(initial = false) {
-    // Each of the 3 maps has an exact 1/3 probability of being played every round
+    // Each of the 10 maps has an exact 1/10 (10%) probability of being played next round
     const nextMapId = pickRandomMap()
     if (this.world) this.world.dispose()
     this.world = buildWorld(this.scene, nextMapId)
@@ -379,12 +416,24 @@ export class GameEngine {
     this.sun.intensity = m.sunIntensity
     this.sunOffset.set(...m.sunDir).normalize().multiplyScalar(140)
 
+    for (const e of this.effects) {
+      if (e.object instanceof THREE.Line) {
+        e.object.geometry.dispose()
+        ;(e.object.material as THREE.Material).dispose()
+      }
+    }
     for (const child of [...this.dynamic.children]) this.dynamic.remove(child)
     this.soldiers = []
     this.projectiles = []
     this.crossbows = []
     this.effects = []
     this.toasts = []
+
+    this.cityCaptured = false
+    this.cityCapture = 0
+    this.cityCaptureStatus = 'idle'
+    this.fortLockWarnAt = 0
+
     this.capture = 0
     this.captureStatus = 'idle'
     this.kills = 0
@@ -392,6 +441,7 @@ export class GameEngine {
     this.medkits = PLAYER_STATS.medkits
     this.healRemaining = 0
     this.reinforceTimer = BLUE_STATS.interval
+    this.redReinforceTimer = RED_STATS.reinforceInterval
     this.crossbowNoticeShown = false
     this.insideRedFort = false
     this.inResupply = false
@@ -409,8 +459,8 @@ export class GameEngine {
     for (let i = 0; i < BLUE_STATS.start; i++) {
       const [ox, oz] = this.world.blueSpawnOffsets[i % this.world.blueSpawnOffsets.length]
       const ally = this.createSoldier('blue', new THREE.Vector3(ox, 0, BLUE_Z + oz))
-      // Ensure balanced left/right lane distribution across maps (especially Twin Bridges)
-      ally.laneX = (i % 2 === 0 ? -1 : 1) * (2.5 + Math.random() * 4.5)
+      const laneGroup = i % 3
+      ally.laneX = laneGroup === 0 ? (Math.random() - 0.5) * 4 : (laneGroup === 1 ? -1 : 1) * (4 + Math.random() * 4)
     }
 
     for (const postDef of this.world.redPosts) {
@@ -442,10 +492,15 @@ export class GameEngine {
     this.world.blueCaptureFlag.position.y = this.world.flagBottomY
     this.world.blueCaptureFlag.visible = false
 
+    this.world.cityRedFlag.position.y = this.world.cityFlagTopY
+    this.world.cityRedFlag.visible = true
+    this.world.cityBlueFlag.position.y = this.world.cityFlagBottomY
+    this.world.cityBlueFlag.visible = false
+
     if (!initial) {
       this.toasts.push({
         id: ++this.toastId,
-        text: `Battlefield: ${m.name}`,
+        text: `Battlefield: ${m.name} (${m.cityName})`,
         tone: 'info',
         expires: this.time + 3.5,
       })
@@ -585,6 +640,7 @@ export class GameEngine {
   private onResize = () => {
     const w = this.container.clientWidth
     const h = this.container.clientHeight
+    if (w <= 0 || h <= 0) return
     this.camera.aspect = w / h
     this.camera.updateProjectionMatrix()
     this.renderer.setSize(w, h)
@@ -621,7 +677,7 @@ export class GameEngine {
   // ---------- HUD ----------
 
   private toast(text: string, tone: Toast['tone'] = 'info') {
-    this.toasts.push({ id: ++this.toastId, text, tone, expires: this.time + 3 })
+    this.toasts.push({ id: ++this.toastId, text, tone, expires: this.time + 3.2 })
     if (this.toasts.length > 3) this.toasts.shift()
     this.emit()
   }
@@ -633,6 +689,7 @@ export class GameEngine {
       state: this.state,
       mapId: this.world.map.id,
       mapName: this.world.map.name,
+      cityName: this.world.map.cityName,
       mapSubtitle: this.world.map.subtitle,
       hp: Math.max(0, Math.ceil(this.player.hp)),
       maxHp: this.player.maxHp,
@@ -643,6 +700,9 @@ export class GameEngine {
       healing: this.healRemaining > 0 ? clamp(this.healTime / PLAYER_STATS.healDuration, 0, 1) : null,
       blocking: this.player.blocking,
       running: this.keys.has('ShiftLeft') || this.keys.has('ShiftRight'),
+      cityCaptured: this.cityCaptured,
+      cityCapture: this.cityCapture,
+      cityCaptureStatus: this.cityCaptureStatus,
       capture: this.capture,
       captureStatus: this.captureStatus,
       redAlive: reds,
@@ -852,11 +912,11 @@ export class GameEngine {
         if (p.bullets > 0) {
           this.playerFireGun()
           p.cooldown = 0.22
-        } else this.warnAmmo('Out of bullets — resupply at the blue ring or switch weapons')
+        } else this.warnAmmo('Out of bullets — resupply at a blue ring or switch weapons')
       } else if (p.arrows > 0) {
         this.playerFireBow()
         p.cooldown = 0.75
-      } else this.warnAmmo('Out of arrows — resupply at the blue ring or switch weapons')
+      } else this.warnAmmo('Out of arrows — resupply at a blue ring or switch weapons')
     }
 
     if (p.swingTime >= 0) {
@@ -877,9 +937,11 @@ export class GameEngine {
       if (p.hp >= p.maxHp) this.healRemaining = 0
     }
 
-    // Resupply
+    // Resupply (Blue Fort ring OR captured Central City Plaza forward ring!)
     const rp = this.world.resupplyPosition
-    this.inResupply = Math.hypot(p.pos.x - rp.x, p.pos.z - rp.z) < 4
+    const inFortResupply = Math.hypot(p.pos.x - rp.x, p.pos.z - rp.z) < 4
+    const inCityResupply = this.cityCaptured && Math.hypot(p.pos.x, p.pos.z - CITY_Z) < CITY_CAPTURE_RADIUS
+    this.inResupply = inFortResupply || inCityResupply
     if (this.inResupply) {
       this.resupplyTimer -= dt
       p.hp = Math.min(p.maxHp, p.hp + dt * 12)
@@ -920,7 +982,7 @@ export class GameEngine {
   private castAim(): { t: number; soldier: Soldier | null; head: boolean; crossbow: Crossbow | null } {
     const ray = this.aimRay()
     const minT = this.camera.position.distanceTo(this.tmp.copy(this.player.pos).setY(this.player.pos.y + 1.4)) + 0.6
-    let best = { t: 220, soldier: null as Soldier | null, head: false, crossbow: null as Crossbow | null }
+    let best = { t: 260, soldier: null as Soldier | null, head: false, crossbow: null as Crossbow | null }
     for (const s of this.soldiers) {
       if (!s.alive || s.team === 'blue') continue
       const body = this.tmp2.copy(s.pos).setY(s.pos.y + 1.2)
@@ -981,7 +1043,7 @@ export class GameEngine {
     p.arrows--
     p.recoil = 0.35
     const hit = this.castAim()
-    const aimPoint = this.ray.at(Math.min(hit.t, 160), new THREE.Vector3())
+    const aimPoint = this.ray.at(Math.min(hit.t, 175), new THREE.Vector3())
     const start = this.muzzlePosition(p, new THREE.Vector3())
     const dist = start.distanceTo(aimPoint)
     const speed = 85
@@ -1030,7 +1092,7 @@ export class GameEngine {
       if (victim.hp <= 0) {
         if (this.medkits > 0) {
           this.medkits--
-          victim.hp = 60
+          victim.hp = 70
           this.healRemaining = 0
           this.toast('Med kit used automatically — get to cover!', 'bad')
         } else {
@@ -1081,10 +1143,19 @@ export class GameEngine {
     if (document.pointerLockElement === this.renderer.domElement) document.exitPointerLock()
   }
 
-  // ---------- NPCs ----------
+  // ---------- NPCs & 3-Avenue City Navigation ----------
+
+  private pickSoldierAvenue(soldier: Soldier, from: THREE.Vector3): number {
+    if (Math.abs(from.x) > 14) return from.x < 0 ? -22 : 22
+    if (Math.abs(from.z) > CITY_HALF_Z) {
+      const m = soldier.id % 3
+      return m === 0 ? 0 : m === 1 ? -22 : 22
+    }
+    return 0
+  }
 
   private navGoal(soldier: Soldier, from: THREE.Vector3, to: THREE.Vector3, out: THREE.Vector3) {
-    // 1. If currently inside a fort and destination is outside, exit through that fort's gate first
+    // 1. If currently inside Blue or Red Fort and destination is outside, exit through that fort's gate first
     for (const cz of [BLUE_Z, RED_Z]) {
       const inFrom = isInsideFort(from.x, from.z, cz)
       const inTo = isInsideFort(to.x, to.z, cz)
@@ -1095,48 +1166,67 @@ export class GameEngine {
       return inLane ? out.set(0, 0, frontZ + s * 6) : out.set(0, 0, frontZ - s * 5)
     }
 
-    // 2. If the current map has a river/gorge crossing with bridges, route cleanly across a bridge
-    const crossing = this.world.crossing
-    if (crossing) {
-      const band = crossing.halfBandZ
-      const exitZ = band + 3
-      const pickBridgeX = () => {
-        const prefX = Math.abs(from.x) < 6 ? soldier.laneX : from.x
-        let bestBx = crossing.bridgeXs[0]
-        let bestDist = Math.abs(prefX - bestBx)
-        for (let i = 1; i < crossing.bridgeXs.length; i++) {
-          const d = Math.abs(prefX - crossing.bridgeXs[i])
-          if (d < bestDist) {
-            bestDist = d
-            bestBx = crossing.bridgeXs[i]
-          }
+    // 2. Frostspire canal bridges at z = +-64 (aligned with avenues -22, 0, +22)
+    if (this.world.map.hazardKind === 'ice') {
+      for (const canalZ of [64, -64]) {
+        const band = 8.5
+        if (Math.abs(from.z - canalZ) <= band) {
+          const bx = Math.abs(from.x) < 11 ? 0 : from.x < 0 ? -22 : 22
+          if (to.z < canalZ - band) return out.set(bx, 0, canalZ - 11)
+          if (to.z > canalZ + band) return out.set(bx, 0, canalZ + 11)
+        } else if (from.z > canalZ + band && to.z < canalZ + band) {
+          const bx = this.pickSoldierAvenue(soldier, from)
+          return Math.abs(from.x - bx) > 3.2 ? out.set(bx, 0, canalZ + 11) : out.set(bx, 0, canalZ - 11)
+        } else if (from.z < canalZ - band && to.z > canalZ - band) {
+          const bx = this.pickSoldierAvenue(soldier, from)
+          return Math.abs(from.x - bx) > 3.2 ? out.set(bx, 0, canalZ - 11) : out.set(bx, 0, canalZ + 11)
         }
-        return bestBx
-      }
-
-      if (Math.abs(from.z) <= band) {
-        // Currently on a bridge
-        const bx = pickBridgeX()
-        if (to.z < -band) return out.set(bx, 0, -exitZ)
-        if (to.z > band) return out.set(bx, 0, exitZ)
-        if (Math.abs(to.x - bx) <= crossing.bridgeHalfW + 1.2) {
-          return out.set(clamp(to.x, bx - crossing.bridgeHalfW, bx + crossing.bridgeHalfW), 0, to.z)
-        }
-        return out.set(bx, 0, from.z >= 0 ? exitZ : -exitZ)
-      }
-
-      if (from.z > band && to.z < band) {
-        const bx = pickBridgeX()
-        return Math.abs(from.x - bx) > crossing.bridgeHalfW ? out.set(bx, 0, exitZ) : out.set(bx, 0, -exitZ)
-      }
-
-      if (from.z < -band && to.z > -band) {
-        const bx = pickBridgeX()
-        return Math.abs(from.x - bx) > crossing.bridgeHalfW ? out.set(bx, 0, -exitZ) : out.set(bx, 0, exitZ)
       }
     }
 
-    // 3. Same side of any crossing: if destination is inside a fort, enter through its front gate
+    // 3. Central Walled City 3-Avenue & Cross-Street Routing (z in [-47, +47])
+    const cityEdge = CITY_HALF_Z
+    const outsideEntryZ = cityEdge + 4
+    const insideEntryZ = 39
+
+    if (from.z > cityEdge && to.z <= cityEdge) {
+      const ax = this.pickSoldierAvenue(soldier, from)
+      return Math.abs(from.x - ax) > 3.2 ? out.set(ax, 0, outsideEntryZ) : out.set(ax, 0, insideEntryZ)
+    }
+
+    if (from.z < -cityEdge && to.z >= -cityEdge) {
+      const ax = this.pickSoldierAvenue(soldier, from)
+      return Math.abs(from.x - ax) > 3.2 ? out.set(ax, 0, -outsideEntryZ) : out.set(ax, 0, -insideEntryZ)
+    }
+
+    if (Math.abs(from.z) <= cityEdge) {
+      // Exiting city north toward Red Fort
+      if (to.z < -cityEdge) {
+        const exitAx = Math.abs(from.x) < 11 ? 0 : from.x < 0 ? -22 : 22
+        if (Math.abs(from.x - exitAx) > 3.2) {
+          const crossZ = Math.abs(from.z) < 12 ? 0 : from.z < 0 ? -38 : 38
+          return Math.abs(from.z - crossZ) > 3.2 ? out.set(from.x, 0, crossZ) : out.set(exitAx, 0, crossZ)
+        }
+        return out.set(exitAx, 0, -outsideEntryZ)
+      }
+      // Exiting city south toward Blue Fort
+      if (to.z > cityEdge) {
+        const exitAx = Math.abs(from.x) < 11 ? 0 : from.x < 0 ? -22 : 22
+        if (Math.abs(from.x - exitAx) > 3.2) {
+          const crossZ = Math.abs(from.z) < 12 ? 0 : from.z > 0 ? 38 : -38
+          return Math.abs(from.z - crossZ) > 3.2 ? out.set(from.x, 0, crossZ) : out.set(exitAx, 0, crossZ)
+        }
+        return out.set(exitAx, 0, outsideEntryZ)
+      }
+      // Moving within the city toward the Central Town Plaza from an outer avenue
+      if (Math.abs(to.x) < 12 && Math.abs(to.z) < 12 && Math.abs(from.x) > 13.5) {
+        const curAx = from.x < 0 ? -22 : 22
+        if (Math.abs(from.z) > 3.8) return out.set(curAx, 0, 0)
+        return out.copy(to)
+      }
+    }
+
+    // 4. Same side of city: if destination is inside a fort, enter through its front gate
     for (const cz of [BLUE_Z, RED_Z]) {
       const inFrom = isInsideFort(from.x, from.z, cz)
       const inTo = isInsideFort(to.x, to.z, cz)
@@ -1159,10 +1249,10 @@ export class GameEngine {
     const len = dir.length()
     if (len < 0.01) return true
     dir.divideScalar(len)
-    const ray = new THREE.Ray(a, dir)
+    this.projRay.set(a, dir)
     for (const c of this.colliders) {
       if (c.low || c.movementOnly) continue
-      const hit = ray.intersectBox(c.box, this.tmp3)
+      const hit = this.projRay.intersectBox(c.box, this.tmp3)
       if (hit && hit.distanceTo(a) < len - 0.4) return false
     }
     return true
@@ -1230,9 +1320,16 @@ export class GameEngine {
       }
       this.npcAttack(s, t, dist, stats)
     } else if (s.team === 'blue') {
-      const inRed = isInsideFort(s.pos.x, s.pos.z, RED_Z)
-      goal.set(s.laneX * (inRed ? 1.2 : 0.6), 0, RED_Z + (inRed ? 0 : 4))
-      stopRange = 2
+      if (!this.cityCaptured) {
+        // Stage 1: Blue army converges on the Central City Town Plaza to secure the city!
+        goal.set(clamp(s.laneX * 0.7, -5, 5), 0, ((s.id % 5) - 2) * 2.2)
+        stopRange = 2.4
+      } else {
+        // Stage 2: City secured — Blue army storms the Red Fort!
+        const inRed = isInsideFort(s.pos.x, s.pos.z, RED_Z)
+        goal.set(s.laneX * (inRed ? 1.2 : 0.6), 0, RED_Z + (inRed ? 0 : 4))
+        stopRange = 2
+      }
       s.weapon = 'sword'
     } else if (s.post) {
       goal.copy(s.post)
@@ -1249,8 +1346,8 @@ export class GameEngine {
       if (s.swingTime > 0.5) s.swingTime = -1
     }
 
-    const nav = this.navGoal(s, s.pos, goal, this.tmp2.set(0, 0, 0)).clone()
-    const finalLeg = nav.equals(goal)
+    const nav = this.navGoal(s, s.pos, goal, this.navTmp)
+    const finalLeg = nav.x === goal.x && nav.z === goal.z
     let dx = nav.x - s.pos.x
     let dz = nav.z - s.pos.z
     const d = Math.hypot(dx, dz)
@@ -1302,8 +1399,8 @@ export class GameEngine {
       }
       return
     }
-    const start = this.muzzlePosition(s, new THREE.Vector3())
-    const aim = new THREE.Vector3(t.pos.x, t.pos.y + 1.25, t.pos.z)
+    const start = this.muzzlePosition(s, this.tmp4)
+    const aim = this.tmp5.set(t.pos.x, t.pos.y + 1.25, t.pos.z)
     if (!this.hasLineOfSight(start, aim)) {
       s.cooldown = 0.4
       return
@@ -1316,7 +1413,11 @@ export class GameEngine {
       const chance = clamp(stats.gunAccuracy * (1 - dist / 70) + 0.1, 0.08, 0.9)
       const hit = Math.random() < chance
       const end = aim.clone()
-      if (!hit) end.add(new THREE.Vector3((Math.random() - 0.5) * 3, (Math.random() - 0.3) * 2, (Math.random() - 0.5) * 3))
+      if (!hit) {
+        end.x += (Math.random() - 0.5) * 3
+        end.y += (Math.random() - 0.3) * 2
+        end.z += (Math.random() - 0.5) * 3
+      }
       this.spawnTracer(start, end, s.team === 'red' ? '#ffb08a' : '#bfe0ff')
       this.spawnFlash(start)
       if (hit) this.damageSoldier(t, WEAPON_DAMAGE.gun * s.damageMultiplier, s.pos, s)
@@ -1364,17 +1465,45 @@ export class GameEngine {
   }
 
   private updateReinforcements(dt: number) {
+    // Blue reinforcements (muster from captured Central City in Stage 2, or Blue Fort in Stage 1)
     this.reinforceTimer -= dt
-    if (this.reinforceTimer > 0) return
-    this.reinforceTimer = BLUE_STATS.interval
-    const alive = this.soldiers.filter((s) => s.team === 'blue' && !s.isPlayer && s.alive).length
-    const count = Math.min(BLUE_STATS.reinforce, BLUE_STATS.max - alive)
-    for (let i = 0; i < count; i++) {
-      const side = i === 0 ? -1 : 1
-      const ally = this.createSoldier('blue', new THREE.Vector3(side * 4, 0, BLUE_Z - 6))
-      ally.laneX = side * (3 + Math.random() * 4)
+    if (this.reinforceTimer <= 0) {
+      this.reinforceTimer = BLUE_STATS.interval
+      const alive = this.soldiers.filter((s) => s.team === 'blue' && !s.isPlayer && s.alive).length
+      const count = Math.min(BLUE_STATS.reinforce, BLUE_STATS.max - alive)
+      const spawnZ = this.cityCaptured ? CITY_Z + 8 : BLUE_Z - 6
+      for (let i = 0; i < count; i++) {
+        const side = i === 0 ? -1 : 1
+        const ally = this.createSoldier('blue', new THREE.Vector3(side * 4, 0, spawnZ))
+        ally.laneX = side * (3 + Math.random() * 4)
+      }
+      if (count > 0) {
+        this.toast(
+          this.cityCaptured
+            ? `${count} blue reinforcements mustered in ${this.world.map.cityName}`
+            : `${count} blue reinforcements have arrived`,
+          'good',
+        )
+      }
     }
-    if (count > 0) this.toast(`${count} blue reinforcements have arrived`, 'good')
+
+    // Red Keep reserve reinforcements keep longer battles dynamic while Red holds the fort
+    this.redReinforceTimer -= dt
+    if (this.redReinforceTimer <= 0) {
+      this.redReinforceTimer = RED_STATS.reinforceInterval
+      if (this.capture < 0.75) {
+        const redAlive = this.soldiers.filter((s) => s.team === 'red' && s.alive).length
+        const count = Math.min(RED_STATS.reinforce, Math.max(0, RED_STATS.reinforceCap - redAlive))
+        for (let i = 0; i < count; i++) {
+          const side = i === 0 ? -1 : 1
+          const post = new THREE.Vector3(side * 6, 0, RED_Z + 8)
+          const r = this.createSoldier('red', new THREE.Vector3(side * 3.5, 0, RED_Z - 11))
+          r.post = post
+          r.leash = 26
+          r.yaw = 0
+        }
+      }
+    }
   }
 
   private cleanupDead() {
@@ -1417,7 +1546,7 @@ export class GameEngine {
         continue
       }
       c.cooldown -= dt
-      const aim = new THREE.Vector3(target.pos.x, target.pos.y + 1.2, target.pos.z)
+      const aim = this.tmp4.set(target.pos.x, target.pos.y + 1.2, target.pos.z)
       const hd = Math.hypot(aim.x - c.pivot.x, aim.z - c.pivot.z)
       const elevation = Math.atan2(aim.y - c.pivot.y, hd)
       c.model.pitch.rotation.x = lerp(c.model.pitch.rotation.x, -elevation, dt * 6)
@@ -1472,7 +1601,6 @@ export class GameEngine {
   }
 
   private updateProjectiles(dt: number) {
-    const center = new THREE.Vector3()
     this.projectiles = this.projectiles.filter((p) => {
       p.life -= dt
       if (p.life <= 0) {
@@ -1489,10 +1617,10 @@ export class GameEngine {
       for (const s of this.soldiers) {
         if (!s.alive || s.team === p.team) continue
         if (p.kind === 'bolt' && isInsideFort(s.pos.x, s.pos.z, RED_Z)) continue
-        center.set(s.pos.x, s.pos.y + 1.2, s.pos.z)
+        this.tmp4.set(s.pos.x, s.pos.y + 1.2, s.pos.z)
         const headCenter = this.tmp2.set(s.pos.x, s.pos.y + 1.84, s.pos.z)
         const head = segmentSphere(p.prev, p.pos, headCenter, 0.3)
-        if (head || segmentSphere(p.prev, p.pos, center, 0.6)) {
+        if (head || segmentSphere(p.prev, p.pos, this.tmp4, 0.6)) {
           const mult = head && p.fromPlayer ? 1.5 : 1
           this.damageSoldier(s, p.damage * mult, p.prev, p.fromPlayer ? this.player : null)
           this.dynamic.remove(p.mesh)
@@ -1514,23 +1642,82 @@ export class GameEngine {
         p.life = Math.min(p.life, 4)
         return true
       }
-      for (const c of this.colliders) {
-        if (c.movementOnly) continue
-        if (c.box.containsPoint(p.pos)) {
-          p.stuck = true
-          p.life = Math.min(p.life, 4)
-          this.spawnBurst(p.pos, this.dustMat, 3, 1.5)
-          return true
+
+      // Segment-box raycast prevents high-speed arrows/bolts from tunneling through walls
+      const segDir = this.tmp5.subVectors(p.pos, p.prev)
+      const segLen = segDir.length()
+      if (segLen > 1e-5) {
+        segDir.divideScalar(segLen)
+        this.projRay.set(p.prev, segDir)
+        for (const c of this.colliders) {
+          if (c.movementOnly) continue
+          if (c.box.containsPoint(p.pos)) {
+            p.stuck = true
+            p.life = Math.min(p.life, 4)
+            this.spawnBurst(p.pos, this.dustMat, 3, 1.5)
+            return true
+          }
+          const hit = this.projRay.intersectBox(c.box, this.tmp3)
+          if (hit && hit.distanceToSquared(p.prev) <= segLen * segLen) {
+            p.pos.copy(hit)
+            p.mesh.position.copy(hit)
+            p.stuck = true
+            p.life = Math.min(p.life, 4)
+            this.spawnBurst(hit, this.dustMat, 3, 1.5)
+            return true
+          }
         }
       }
       return true
     })
   }
 
-  // ---------- capture ----------
+  // ---------- two-stage siege capture ----------
 
   private updateCapture(dt: number) {
     const p = this.player
+
+    // Stage 1: Capture the Central City Town Plaza first!
+    if (!this.cityCaptured) {
+      const inCityCircle = p.alive && Math.hypot(p.pos.x, p.pos.z - CITY_Z) < CITY_CAPTURE_RADIUS
+      let cStatus: CaptureStatus = 'idle'
+      if (inCityCircle) {
+        const contested = this.soldiers.some(
+          (s) => s.alive && s.team === 'red' && Math.hypot(s.pos.x, s.pos.z - CITY_Z) < CITY_CAPTURE_RADIUS + 1.5,
+        )
+        cStatus = contested ? 'contested' : 'capturing'
+        if (!contested) this.cityCapture = Math.min(1, this.cityCapture + dt / CITY_CAPTURE_TIME)
+      }
+      if (cStatus !== this.cityCaptureStatus) {
+        if (cStatus === 'contested') this.toast('Town square contested — clear red garrison!', 'bad')
+        if (cStatus === 'capturing' && this.cityCaptureStatus === 'idle' && this.cityCapture === 0) {
+          this.toast(`Capturing ${this.world.map.cityName}…`, 'good')
+        }
+        this.cityCaptureStatus = cStatus
+      }
+
+      const { cityFlagTopY, cityFlagBottomY } = this.world
+      this.world.cityRedFlag.position.y = lerp(cityFlagTopY, cityFlagBottomY, this.cityCapture)
+      this.world.cityRedFlag.visible = this.cityCapture < 0.98
+      this.world.cityBlueFlag.visible = this.cityCapture > 0.01
+      this.world.cityBlueFlag.position.y = lerp(cityFlagBottomY, cityFlagTopY, this.cityCapture)
+
+      if (this.cityCapture >= 1) {
+        this.cityCaptured = true
+        this.cityCaptureStatus = 'idle'
+        this.toast(`${this.world.map.cityName} secured! Forward resupply active — storm the Red Fort!`, 'good')
+        this.emit()
+      }
+
+      // Warn if player sprints early to Red Fort before capturing the Central City
+      if (p.alive && Math.hypot(p.pos.x, p.pos.z - RED_Z) < CAPTURE_RADIUS && this.time - this.fortLockWarnAt > 4) {
+        this.fortLockWarnAt = this.time
+        this.toast(`Secure ${this.world.map.cityName} in the center first to advance your banner!`, 'bad')
+      }
+      return
+    }
+
+    // Stage 2: Conquer the Red Fort Courtyard!
     const inCircle = p.alive && Math.hypot(p.pos.x, p.pos.z - RED_Z) < CAPTURE_RADIUS
     let status: CaptureStatus = 'idle'
     if (inCircle) {
@@ -1542,7 +1729,9 @@ export class GameEngine {
     }
     if (status !== this.captureStatus) {
       if (status === 'contested') this.toast('Capture paused — clear the defenders from the circle', 'bad')
-      if (status === 'capturing' && this.captureStatus === 'idle' && this.capture === 0) this.toast('Raising the blue banner…', 'good')
+      if (status === 'capturing' && this.captureStatus === 'idle' && this.capture === 0) {
+        this.toast('Raising the blue banner over the Red Fort…', 'good')
+      }
       this.captureStatus = status
     }
     const { flagTopY, flagBottomY } = this.world
@@ -1624,19 +1813,57 @@ export class GameEngine {
       }
     }
     const pulse = 0.5 + Math.sin(this.time * 4) * 0.5
+
+    // City Plaza Ring visuals (Gold capture ring in Stage 1 -> Sky-blue forward resupply ring in Stage 2!)
+    const cityRingMat = this.world.cityRing.material as THREE.MeshBasicMaterial
+    const cityDiscMat = this.world.cityDisc.material as THREE.MeshBasicMaterial
+    if (this.cityCaptured) {
+      cityRingMat.color.set('#58a6ff')
+      cityDiscMat.color.set('#58a6ff')
+      cityRingMat.opacity = 0.55 + pulse * 0.35
+      cityDiscMat.opacity = 0.06 + pulse * 0.06
+    } else if (this.cityCaptureStatus === 'contested') {
+      cityRingMat.color.set('#ff5a4f')
+      cityDiscMat.color.set('#ff5a4f')
+      cityRingMat.opacity = 0.9
+      cityDiscMat.opacity = 0.08 + pulse * 0.12
+    } else if (this.cityCaptureStatus === 'capturing') {
+      cityRingMat.color.set('#5aa0ff')
+      cityDiscMat.color.set('#5aa0ff')
+      cityRingMat.opacity = 0.9
+      cityDiscMat.opacity = 0.08 + pulse * 0.12
+    } else {
+      cityRingMat.color.set('#f2c14e')
+      cityDiscMat.color.set('#f2c14e')
+      cityRingMat.opacity = 0.9
+      cityDiscMat.opacity = 0.08 + pulse * 0.12
+    }
+
+    // Red Fort Ring visuals
     const ringMat = this.world.captureRing.material as THREE.MeshBasicMaterial
     const discMat = this.world.captureDisc.material as THREE.MeshBasicMaterial
-    if (this.captureStatus === 'contested') {
+    if (!this.cityCaptured) {
+      ringMat.color.set('#9ca3af')
+      discMat.color.set('#9ca3af')
+      ringMat.opacity = 0.35
+      discMat.opacity = 0.04
+    } else if (this.captureStatus === 'contested') {
       ringMat.color.set('#ff5a4f')
       discMat.color.set('#ff5a4f')
+      ringMat.opacity = 0.9
+      discMat.opacity = 0.08 + pulse * 0.12
     } else if (this.captureStatus === 'capturing') {
       ringMat.color.set('#5aa0ff')
       discMat.color.set('#5aa0ff')
+      ringMat.opacity = 0.9
+      discMat.opacity = 0.08 + pulse * 0.12
     } else {
       ringMat.color.set('#f2c14e')
       discMat.color.set('#f2c14e')
+      ringMat.opacity = 0.9
+      discMat.opacity = 0.08 + pulse * 0.12
     }
-    discMat.opacity = 0.08 + pulse * 0.12
+
     this.updateCamera()
   }
 

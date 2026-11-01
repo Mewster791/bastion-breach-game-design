@@ -1,27 +1,37 @@
+Bastion Breach is a Red vs Blue third-person siege battle across 10 distinct battlefields.
 
+Each battlefield features a walled central city between the Blue and Red forts, and every round randomly selects 1 of the 10 maps (1/10 chance each):
+1. Verdant Valley (Oakhaven Market)
+2. Frostspire Crossing (Winterhold Keep)
+3. Scorched Basalt (Ashenforge Bastion)
+4. Golden Mirage (Sunstone Bazaar)
+5. Amberwood Harvest (Goldleaf Burgh)
+6. Whispering Fenlands (Mistwater Town)
+7. Blossom Highlands (Sakura Castle-Town)
+8. Starfall Nocturne (Silverkeep Watch)
+9. Aegean Suncoast (Helios Agora)
+10. Crimson Moor (Ironcrag Keep-Town)
 
-Bastion Breach is Red vs Blue fort battle.
+Two-Stage Siege Objective:
+1. Fight into the central city and hold the town square circle to raise the forward blue banner (unlocking forward resupply and reinforcements).
+2. March on the Red Fort, fight through the garrison and 8 outward-facing wall crossbows, and hold the courtyard gold circle until the blue banner flies. Crossbows only face outward, so once you are inside the red fort walls they cannot target you.
 
-Your blue army marches on the red fort. Fight through 22 defenders, knock out the crossbows on the walls, then stand in the gold circle in the red courtyard until the blue banner flies. Crossbows only face outward, so once you are inside the walls they cannot touch you.
+Controls:
+W A S D          Move
+Mouse            Look and aim
+Shift            Run
+Space            Jump
+1 / 2 / 3        Sword & shield / Gun / Bow
+4 or H           Use med kit
+Left click       Swing sword or fire
+Right click / F  Raise shield (sword) · fire (gun, bow)
 
-W A S D   Move
-Mouse     Look and aim
-Shift     Run
-Space     Jump
-1 / 2 / 3
-Sword & shield / Gun / Bow
-4 or H    Use med kit
-Left click
-Swing sword or fire
-Right click or F
-Raise shield (sword) · fire (gun, bow)
-Swinging while your shield is up deals 25% less damage. Step into the blue ring in your fort to restock.
+Swinging while your shield is up deals 25% less damage. Step into a blue ring in your fort or captured town square to restock.
 
 Game is inspired by War of Knights
 
 
-
-Current Version: 0.56
+Current Version: 0.60
 
 Version 0.2----31/10/2026
 Added readme add configurate things that ought to be configured. And included 21 fixes.
@@ -35,5 +45,5 @@ Version 0.55----31/10/2026
 Version 0.56----1/11/2026
 A minor update.
 
-Version 0.7----1/11/2026
-2 new maps with a 1/3 chance of a particular map being played next round, with 44 fixes.
+Version 0.60----1/11/2026
+Added a central contested city between the forts on every map, expanded rotation to 10 battlefields (1/10 chance per round), introduced two-stage city-to-fort siege pacing for longer rounds, hardened Electron & HTTP security, fixed CI workflows, fixed projectile wall-tunneling, and eliminated WebGL geometry/material memory leaks.

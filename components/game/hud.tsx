@@ -43,44 +43,62 @@ export function Hud({ s }: { s: HudSnapshot }) {
 }
 
 function ObjectiveBar({ s }: { s: HudSnapshot }) {
-  const pct = Math.round(s.capture * 100)
-  const status =
-    s.captureStatus === 'capturing'
-      ? `Raising blue banner — ${pct}%`
-      : s.captureStatus === 'contested'
-        ? 'Contested — clear red defenders from the circle'
-        : pct > 0
-          ? `Banner ${pct}% raised — return to the gold circle`
-          : 'Storm the red fort and hold the gold circle'
+  const stagePct = Math.round((s.cityCaptured ? s.capture : s.cityCapture) * 100)
+  const activeStatus = s.cityCaptured ? s.captureStatus : s.cityCaptureStatus
+
+  const status = !s.cityCaptured
+    ? activeStatus === 'capturing'
+      ? `Stage 1/2 · Capturing ${s.cityName} — ${stagePct}%`
+      : activeStatus === 'contested'
+        ? `Stage 1/2 · Contested — clear red garrison from ${s.cityName}`
+        : stagePct > 0
+          ? `Stage 1/2 · ${s.cityName} ${stagePct}% — return to the town square`
+          : `Stage 1/2 · Secure ${s.cityName} in the center`
+    : activeStatus === 'capturing'
+      ? `Stage 2/2 · Raising blue banner in Red Fort — ${stagePct}%`
+      : activeStatus === 'contested'
+        ? 'Stage 2/2 · Contested — clear red defenders from the courtyard'
+        : stagePct > 0
+          ? `Stage 2/2 · Red Fort ${stagePct}% — return to the gold circle`
+          : 'Stage 2/2 · City secured — storm the Red Fort courtyard'
+
   return (
-    <div className={cn(panel, 'absolute left-1/2 top-4 w-[min(92vw,460px)] -translate-x-1/2 px-4 py-3')}>
+    <div className={cn(panel, 'absolute left-1/2 top-4 w-[min(92vw,490px)] -translate-x-1/2 px-4 py-3')}>
       <div className="mb-2 flex items-center justify-between gap-3">
-        <span className="flex items-center gap-1.5 text-xs font-semibold text-sky-300">
+        <span className="flex shrink-0 items-center gap-1.5 text-xs font-semibold text-sky-300">
           <Flag className="size-3.5" aria-hidden="true" /> Blue
         </span>
         <span className="truncate text-xs font-medium text-amber-200">
-          <span className="font-display text-sm font-semibold tracking-wide">Conquest</span>
-          <span className="mx-1.5 text-white/40" aria-hidden="true">·</span>
-          <span className="text-white/80">{s.mapName}</span>
+          <span className="font-display text-sm font-semibold tracking-wide">{s.mapName}</span>
+          <span className="mx-1.5 text-white/40" aria-hidden="true">
+            ·
+          </span>
+          <span className="text-white/80">{s.cityName}</span>
         </span>
-        <span className="flex items-center gap-1.5 text-xs font-semibold text-red-300">
+        <span className="flex shrink-0 items-center gap-1.5 text-xs font-semibold text-red-300">
           Red <Flag className="size-3.5" aria-hidden="true" />
         </span>
       </div>
       <div
         className="relative h-2.5 overflow-hidden rounded-full bg-red-700/80"
         role="progressbar"
-        aria-label="Capture progress"
-        aria-valuenow={pct}
+        aria-label="Siege objective progress"
+        aria-valuenow={stagePct}
         aria-valuemin={0}
         aria-valuemax={100}
       >
-        <div className="h-full rounded-full bg-gradient-to-r from-sky-500 to-blue-400 transition-[width] duration-150" style={{ width: `${pct}%` }} />
+        <div
+          className={cn(
+            'h-full rounded-full bg-gradient-to-r transition-[width] duration-150',
+            s.cityCaptured ? 'from-sky-500 to-blue-400' : 'from-amber-400 to-sky-400',
+          )}
+          style={{ width: `${stagePct}%` }}
+        />
       </div>
       <p
         className={cn(
           'mt-2 text-center text-xs',
-          s.captureStatus === 'contested' ? 'text-red-300' : s.captureStatus === 'capturing' ? 'text-sky-200' : 'text-white/75',
+          activeStatus === 'contested' ? 'text-red-300' : activeStatus === 'capturing' ? 'text-sky-200' : 'text-white/75',
         )}
       >
         {status}
@@ -91,9 +109,9 @@ function ObjectiveBar({ s }: { s: HudSnapshot }) {
 
 function ForcesPanel({ s }: { s: HudSnapshot }) {
   return (
-    <div className={cn(panel, 'absolute left-4 top-4 hidden w-52 space-y-2 px-4 py-3 text-xs sm:block')}>
+    <div className={cn(panel, 'absolute left-4 top-4 hidden w-56 space-y-2 px-4 py-3 text-xs sm:block')}>
       <Row icon={<Users className="size-3.5 text-sky-300" aria-hidden="true" />} label="Blue allies" value={`${s.blueAlive}`} />
-      <Row icon={<Skull className="size-3.5 text-red-300" aria-hidden="true" />} label="Red defenders" value={`${s.redAlive}/${s.redTotal}`} />
+      <Row icon={<Skull className="size-3.5 text-red-300" aria-hidden="true" />} label="Red garrison" value={`${s.redAlive}`} />
       <Row
         icon={<Castle className="size-3.5 text-amber-200" aria-hidden="true" />}
         label="Fort crossbows"
@@ -101,7 +119,9 @@ function ForcesPanel({ s }: { s: HudSnapshot }) {
       />
       <div className="border-t border-white/10 pt-2">
         <Row icon={<Target className="size-3.5 text-white/70" aria-hidden="true" />} label="Your kills" value={`${s.kills}`} />
-        <p className="mt-1.5 text-[11px] text-white/55">Reinforcements in {s.nextReinforcement}s</p>
+        <p className="mt-1.5 text-[11px] text-white/55">
+          {s.cityCaptured ? 'City muster' : 'Reinforcements'} in {s.nextReinforcement}s
+        </p>
       </div>
     </div>
   )
@@ -162,9 +182,9 @@ function Toasts({ s }: { s: HudSnapshot }) {
           key={t.id}
           className={cn(
             'rounded-md px-3 py-1 text-sm font-medium shadow',
-            t.tone === 'good' && 'bg-sky-950/80 text-sky-100',
-            t.tone === 'bad' && 'bg-red-950/80 text-red-100',
-            t.tone === 'info' && 'bg-black/60 text-white',
+            t.tone === 'good' && 'bg-sky-950/90 text-sky-100',
+            t.tone === 'bad' && 'bg-red-950/90 text-red-100',
+            t.tone === 'info' && 'bg-black/75 text-white',
           )}
         >
           {t.text}
@@ -200,7 +220,7 @@ function HealthPanel({ s }: { s: HudSnapshot }) {
       <div className="mt-2 flex items-center justify-between text-xs text-white/80">
         <span className="flex items-center gap-1.5">
           <BriefcaseMedical className="size-3.5 text-emerald-300" aria-hidden="true" />
-          Med kits: <span className="font-semibold text-white">{s.medkits}</span>
+          Med kits: <span className="font-semibold text-white tabular-nums">{s.medkits}</span>
         </span>
         {s.healing !== null ? (
           <span className="text-emerald-300">Healing…</span>

@@ -8,11 +8,11 @@ const cinzel = Cinzel({ subsets: ['latin'], variable: '--font-cinzel', weight: [
 export const metadata: Metadata = {
   title: 'Bastion Breach: Blue vs Red',
   description:
-    'A third-person siege combat game. Lead the blue army, fight through red defenders and crossbows, and raise your banner over the red fort.',
+    'A third-person siege combat game across 10 battlefields. Lead the blue army through the fortified central city, fight past red defenders and crossbows, and raise your banner over the red fort.',
   openGraph: {
     title: 'Bastion Breach: Blue vs Red',
     description:
-      'A third-person siege combat game. Lead the blue army, fight through red defenders and crossbows, and raise your banner over the red fort.',
+      'A third-person siege combat game across 10 battlefields. Lead the blue army through the fortified central city, fight past red defenders and crossbows, and raise your banner over the red fort.',
   },
   icons: {
     icon: [
