@@ -12,13 +12,26 @@ async function createWindow() {
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
-    webPreferences: { contextIsolation: true }
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
   });
+
   // External links open in the real browser, not inside the app window.
-  win.webContents.setWindowOpenHandler(function (d) { shell.openExternal(d.url); return { action: 'deny' }; });
+  win.webContents.setWindowOpenHandler(function (d) {
+    shell.openExternal(d.url);
+    return { action: 'deny' };
+  });
+
   await loadApp(win);
 }
 
 app.whenReady().then(createWindow);
-app.on('activate', function () { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
-app.on('window-all-closed', function () { if (process.platform !== 'darwin') app.quit(); });
+app.on('activate', function () {
+  if (BrowserWindow.getAllWindows().length === 0) createWindow();
+});
+app.on('window-all-closed', function () {
+  if (process.platform !== 'darwin') app.quit();
+});
