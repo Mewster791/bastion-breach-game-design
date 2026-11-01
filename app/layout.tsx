@@ -1,4 +1,3 @@
-import { Analytics } from '@vercel/analytics/next'
 import type { Metadata, Viewport } from 'next'
 import { Cinzel, Inter } from 'next/font/google'
 import './globals.css'
@@ -10,7 +9,11 @@ export const metadata: Metadata = {
   title: 'Bastion Breach: Blue vs Red',
   description:
     'A third-person siege combat game. Lead the blue army, fight through red defenders and crossbows, and raise your banner over the red fort.',
-  generator: 'v0.app',
+  openGraph: {
+    title: 'Bastion Breach: Blue vs Red',
+    description:
+      'A third-person siege combat game. Lead the blue army, fight through red defenders and crossbows, and raise your banner over the red fort.',
+  },
   icons: {
     icon: [
       {
@@ -44,7 +47,6 @@ export default function RootLayout({
     <html lang="en" className={`${inter.variable} ${cinzel.variable} bg-[#0d1422]`}>
       <body className="font-sans antialiased">
         {children}
-        {process.env.NODE_ENV === 'production' && <Analytics />}
       </body>
     </html>
   )
