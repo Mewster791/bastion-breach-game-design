@@ -1,5 +1,10 @@
 import * as THREE from 'three'
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js'
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
+import { SSAOPass } from 'three/examples/jsm/postprocessing/SSAOPass.js'
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
 import {
   BLOCKING_SWORD_MULTIPLIER,
   BLUE_STATS,
@@ -9,7 +14,6 @@ import {
   CITY_CAPTURE_RADIUS,
   CITY_CAPTURE_TIME,
   CITY_HALF_Z,
-  CITY_Z,
   CROSSBOW_STATS,
   FORT_HALF,
   GATE_HALF,
@@ -22,8 +26,14 @@ import {
   WORLD_LIMIT_Z,
   isInsideFort,
 } from './constants'
+import {
+  clearSavedCustomMap,
+  loadSavedCustomMap,
+  saveCustomMapToStorage,
+  type CustomMapLayout,
+} from './custom-map'
 import { createCrossbowModel, createSoldierModel, type CrossbowModel, type SoldierModel, type Team, type Weapon } from './models'
-import { buildWorld, pickRandomMap, type Collider, type MapId, type WorldRefs } from './world'
+import { buildWorld, pickNextBattlefield, type Collider, type MapId, type WorldRefs } from './world'
 
 export type GameState = 'ready' | 'playing' | 'paused' | 'victory' | 'defeat'
 export type CaptureStatus = 'idle' | 'capturing' | 'contested'
@@ -40,6 +50,8 @@ export interface HudSnapshot {
   mapName: string
   cityName: string
   mapSubtitle: string
+  isCustomMap: boolean
+  hasCustomMap: boolean
   hp: number
   maxHp: number
   weapon: Weapon
@@ -191,13 +203,20 @@ function segmentSphere(a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, r: 
 
 export class GameEngine {
   private renderer: THREE.WebGLRenderer
+  private composer: EffectComposer | null = null
+  private renderPass: RenderPass | null = null
+  private ssaoPass: SSAOPass | null = null
+  private bloomPass: UnrealBloomPass | null = null
+  private outputPass: OutputPass | null = null
   private scene = new THREE.Scene()
   private envTex: THREE.Texture | null = null
   private camera: THREE.PerspectiveCamera
   private hemi: THREE.HemisphereLight
+  private rimLight: THREE.DirectionalLight
   private sun: THREE.DirectionalLight
-  private sunOffset = new THREE.Vector3(-0.6, 0.45, 0.66).normalize().multiplyScalar(140)
+  private sunOffset = new THREE.Vector3(-0.6, 0.45, 0.66).normalize().multiplyScalar(170)
   private world!: WorldRefs
+  private customMap: CustomMapLayout | null = null
   private colliders: Collider[] = []
   private dynamic = new THREE.Group()
   private raf = 0
@@ -208,6 +227,7 @@ export class GameEngine {
   private listeners = new Set<() => void>()
   private snapshot: HudSnapshot
   private lastEmit = 0
+  private onToggleMuteShortcut?: () => void
 
   private state: GameState = 'ready'
   private lockFailed = false
@@ -279,49 +299,85 @@ export class GameEngine {
   private camLook = new THREE.Vector3()
   private camDir = new THREE.Vector3()
 
-  constructor(private container: HTMLDivElement) {
+  constructor(private container: HTMLDivElement, opts?: { onToggleMute?: () => void }) {
+    this.onToggleMuteShortcut = opts?.onToggleMute
+    this.customMap = loadSavedCustomMap()
     this.isSoftwareGl = detectSoftwareGl()
+    const initW = Math.max(1, container.clientWidth)
+    const initH = Math.max(1, container.clientHeight)
+    const pixelRatio = this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2)
+
     this.renderer = new THREE.WebGLRenderer({
       antialias: !this.isSoftwareGl,
       powerPreference: 'high-performance',
     })
-    this.renderer.setPixelRatio(this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2))
-    this.renderer.setSize(container.clientWidth, container.clientHeight)
+    this.renderer.setPixelRatio(pixelRatio)
+    this.renderer.setSize(initW, initH)
     this.renderer.shadowMap.enabled = !this.isSoftwareGl
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
-    this.renderer.toneMappingExposure = 1.05
+    this.renderer.toneMappingExposure = 1.06
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
     this.renderer.domElement.className = 'block h-full w-full'
-    this.renderer.domElement.setAttribute('aria-label', 'Bastion Breach battlefield')
+    this.renderer.domElement.setAttribute('aria-label', 'Triterra Siege battlefield')
     container.appendChild(this.renderer.domElement)
 
     const pmrem = new THREE.PMREMGenerator(this.renderer)
     const roomEnv = new RoomEnvironment()
     this.envTex = pmrem.fromScene(roomEnv, 0.04).texture
     this.scene.environment = this.envTex
-    this.scene.environmentIntensity = 0.35
+    this.scene.environmentIntensity = 0.28
     pmrem.dispose()
     roomEnv.dispose()
 
-    this.camera = new THREE.PerspectiveCamera(65, container.clientWidth / container.clientHeight, 0.1, 1300)
+    this.camera = new THREE.PerspectiveCamera(65, initW / initH, 0.2, 1300)
 
-    this.hemi = new THREE.HemisphereLight('#bcd8ff', '#5b6b3a', 0.85)
+    // Subdued sky/ground hemisphere + counter-rim fill paired with a powerful shadow-casting DirectionalLight sun
+    this.hemi = new THREE.HemisphereLight('#bcd8ff', '#4b5932', 0.46)
     this.scene.add(this.hemi)
-    this.sun = new THREE.DirectionalLight('#fff0d6', 2.6)
+
+    this.rimLight = new THREE.DirectionalLight('#9ec2f7', 0.36)
+    this.rimLight.position.set(85, 55, -95)
+    this.scene.add(this.rimLight)
+
+    this.sun = new THREE.DirectionalLight('#fff0d6', 3.15)
     this.sun.castShadow = !this.isSoftwareGl
-    this.sun.shadow.mapSize.set(2048, 2048)
-    this.sun.shadow.camera.left = -65
-    this.sun.shadow.camera.right = 65
-    this.sun.shadow.camera.top = 65
-    this.sun.shadow.camera.bottom = -65
+    this.sun.shadow.mapSize.set(4096, 4096)
+    this.sun.shadow.camera.left = -96
+    this.sun.shadow.camera.right = 96
+    this.sun.shadow.camera.top = 96
+    this.sun.shadow.camera.bottom = -96
     this.sun.shadow.camera.near = 10
-    this.sun.shadow.camera.far = 340
-    this.sun.shadow.bias = -0.0004
-    this.sun.shadow.normalBias = 0.04
-    this.sun.shadow.radius = 3
+    this.sun.shadow.camera.far = 390
+    this.sun.shadow.bias = -0.00035
+    this.sun.shadow.normalBias = 0.025
+    this.sun.shadow.radius = 1.75
     this.scene.add(this.sun, this.sun.target)
     this.scene.add(this.dynamic)
+
+    // Post-processing pipeline (RenderPass -> SSAOPass -> UnrealBloomPass -> OutputPass)
+    if (!this.isSoftwareGl) {
+      this.composer = new EffectComposer(this.renderer)
+      this.composer.setPixelRatio(pixelRatio)
+      this.composer.setSize(initW, initH)
+
+      this.renderPass = new RenderPass(this.scene, this.camera)
+      this.composer.addPass(this.renderPass)
+
+      this.ssaoPass = new SSAOPass(this.scene, this.camera, initW, initH, 16)
+      this.ssaoPass.kernelRadius = 12
+      this.ssaoPass.minDistance = 0.0015
+      this.ssaoPass.maxDistance = 0.08
+      this.ssaoPass.output = SSAOPass.OUTPUT.Default
+      this.composer.addPass(this.ssaoPass)
+
+      // Subtle HDR Bloom: threshold 0.88 makes emissive Red & Blue team banners glow cleanly
+      this.bloomPass = new UnrealBloomPass(new THREE.Vector2(initW, initH), 0.36, 0.55, 0.88)
+      this.composer.addPass(this.bloomPass)
+
+      this.outputPass = new OutputPass()
+      this.composer.addPass(this.outputPass)
+    }
 
     this.reset(true)
     this.snapshot = this.buildSnapshot()
@@ -340,6 +396,38 @@ export class GameEngine {
   }
 
   getSnapshot = () => this.snapshot
+
+  getCustomMap = () => this.customMap
+
+  pauseForOverlay() {
+    this.releaseLock()
+    if (this.state === 'playing') {
+      this.state = 'paused'
+      this.emit()
+    }
+  }
+
+  saveCustomMap(layout: CustomMapLayout, playImmediately: boolean) {
+    saveCustomMapToStorage(layout)
+    this.customMap = layout
+    if (playImmediately) {
+      this.reset(false, true)
+      this.start()
+    } else {
+      this.toast(`Saved "${layout.name}" to map rotation`, 'good')
+      this.emit()
+    }
+  }
+
+  removeCustomMap() {
+    clearSavedCustomMap()
+    this.customMap = null
+    if (this.world.isCustom && this.state === 'ready') {
+      this.reset(true, false)
+    }
+    this.toast('Removed custom layout from map rotation', 'info')
+    this.emit()
+  }
 
   start() {
     if (this.state === 'victory' || this.state === 'defeat') this.reset(false)
@@ -376,6 +464,35 @@ export class GameEngine {
     this.sparkMat.dispose()
     this.dustMat.dispose()
     this.flashMat.dispose()
+
+    // Dispose post-processing passes, internal render targets, shader materials, and shadow maps
+    if (this.ssaoPass) {
+      this.ssaoPass.dispose()
+      this.ssaoPass.ssaoMaterial.dispose()
+      if (this.ssaoPass.noiseTexture) this.ssaoPass.noiseTexture.dispose()
+      this.ssaoPass = null
+    }
+    if (this.bloomPass) {
+      this.bloomPass.dispose()
+      this.bloomPass = null
+    }
+    if (this.outputPass) {
+      this.outputPass.dispose()
+      this.outputPass = null
+    }
+    if (this.renderPass) {
+      this.renderPass.dispose()
+      this.renderPass = null
+    }
+    if (this.composer) {
+      this.composer.dispose()
+      this.composer = null
+    }
+    if (this.sun.shadow.map) {
+      this.sun.shadow.map.dispose()
+      this.sun.shadow.map = null
+    }
+
     if (this.world) this.world.dispose()
     if (this.envTex) this.envTex.dispose()
     this.renderer.dispose()
@@ -400,21 +517,25 @@ export class GameEngine {
     }
   }
 
-  private reset(initial = false) {
-    // Each of the 10 maps has an exact 1/10 (10%) probability of being played next round
-    const nextMapId = pickRandomMap()
+  private reset(initial = false, forceCustom = false) {
+    const selection = forceCustom && this.customMap
+      ? { mapId: this.customMap.biome, useCustom: true }
+      : pickNextBattlefield(Boolean(this.customMap))
+    const activeCustom = selection.useCustom ? this.customMap : null
+
     if (this.world) this.world.dispose()
-    this.world = buildWorld(this.scene, nextMapId)
+    this.world = buildWorld(this.scene, selection.mapId, activeCustom)
     this.colliders = this.world.colliders
 
     const m = this.world.map
     this.scene.fog = new THREE.Fog(m.fogColor, m.fogNear, m.fogFar)
     this.hemi.color.set(m.hemiSky)
     this.hemi.groundColor.set(m.hemiGround)
-    this.hemi.intensity = m.hemiIntensity
+    this.hemi.intensity = m.hemiIntensity * 0.54
     this.sun.color.set(m.sunColor)
-    this.sun.intensity = m.sunIntensity
-    this.sunOffset.set(...m.sunDir).normalize().multiplyScalar(140)
+    this.sun.intensity = m.sunIntensity * 1.22
+    this.sunOffset.set(...m.sunDir).normalize().multiplyScalar(170)
+    this.rimLight.position.set(-m.sunDir[0] * 110, 58, -m.sunDir[2] * 110)
 
     for (const e of this.effects) {
       if (e.object instanceof THREE.Line) {
@@ -453,12 +574,16 @@ export class GameEngine {
     this.hitAt = 0
     this.killAt = 0
 
-    this.player = this.createSoldier('blue', new THREE.Vector3(0, 0, BLUE_Z - 10), true)
+    this.player = this.createSoldier('blue', this.world.playerSpawnPos.clone(), true)
     this.player.yaw = Math.PI
 
+    const baseSpawnZ = this.world.isCustom ? this.world.resupplyPosition.z : BLUE_Z
+    const baseSpawnX = this.world.isCustom ? this.world.resupplyPosition.x * 0.35 : 0
     for (let i = 0; i < BLUE_STATS.start; i++) {
       const [ox, oz] = this.world.blueSpawnOffsets[i % this.world.blueSpawnOffsets.length]
-      const ally = this.createSoldier('blue', new THREE.Vector3(ox, 0, BLUE_Z + oz))
+      const sx = clamp(baseSpawnX + ox, -WORLD_LIMIT_X + 6, WORLD_LIMIT_X - 6)
+      const sz = clamp(baseSpawnZ + oz, -WORLD_LIMIT_Z + 6, WORLD_LIMIT_Z - 6)
+      const ally = this.createSoldier('blue', new THREE.Vector3(sx, 0, sz))
       const laneGroup = i % 3
       ally.laneX = laneGroup === 0 ? (Math.random() - 0.5) * 4 : (laneGroup === 1 ? -1 : 1) * (4 + Math.random() * 4)
     }
@@ -553,6 +678,13 @@ export class GameEngine {
   // ---------- input ----------
 
   private onKeyDown = (e: KeyboardEvent) => {
+    const activeTag = (document.activeElement as HTMLElement | null)?.tagName
+    if (activeTag === 'INPUT' || activeTag === 'TEXTAREA' || activeTag === 'SELECT') return
+
+    if (e.code === 'KeyM' && !e.repeat) {
+      this.onToggleMuteShortcut?.()
+      return
+    }
     if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault()
     if (e.code === 'KeyR' && (this.state === 'victory' || this.state === 'defeat')) {
       this.restart()
@@ -644,6 +776,17 @@ export class GameEngine {
     this.camera.aspect = w / h
     this.camera.updateProjectionMatrix()
     this.renderer.setSize(w, h)
+    if (this.composer) {
+      this.composer.setSize(w, h)
+    }
+    if (this.ssaoPass) {
+      this.ssaoPass.setSize(w, h)
+      this.ssaoPass.ssaoMaterial.uniforms.cameraProjectionMatrix.value.copy(this.camera.projectionMatrix)
+      this.ssaoPass.ssaoMaterial.uniforms.cameraInverseProjectionMatrix.value.copy(this.camera.projectionMatrixInverse)
+    }
+    if (this.bloomPass) {
+      this.bloomPass.resolution.set(w, h)
+    }
   }
 
   private bindInput() {
@@ -691,6 +834,8 @@ export class GameEngine {
       mapName: this.world.map.name,
       cityName: this.world.map.cityName,
       mapSubtitle: this.world.map.subtitle,
+      isCustomMap: this.world.isCustom,
+      hasCustomMap: Boolean(this.customMap),
       hp: Math.max(0, Math.ceil(this.player.hp)),
       maxHp: this.player.maxHp,
       weapon: this.player.weapon,
@@ -755,7 +900,11 @@ export class GameEngine {
     this.time += dt
     if (this.state === 'playing') this.update(dt)
     this.updateVisuals(dt)
-    this.renderer.render(this.scene, this.camera)
+    if (this.composer && !this.isSoftwareGl) {
+      this.composer.render(dt)
+    } else {
+      this.renderer.render(this.scene, this.camera)
+    }
     if (this.time - this.lastEmit > 0.1) {
       const before = this.toasts.length
       this.toasts = this.toasts.filter((t) => t.expires > this.time)
@@ -939,8 +1088,9 @@ export class GameEngine {
 
     // Resupply (Blue Fort ring OR captured Central City Plaza forward ring!)
     const rp = this.world.resupplyPosition
+    const cc = this.world.cityCenter
     const inFortResupply = Math.hypot(p.pos.x - rp.x, p.pos.z - rp.z) < 4
-    const inCityResupply = this.cityCaptured && Math.hypot(p.pos.x, p.pos.z - CITY_Z) < CITY_CAPTURE_RADIUS
+    const inCityResupply = this.cityCaptured && Math.hypot(p.pos.x - cc.x, p.pos.z - cc.z) < CITY_CAPTURE_RADIUS
     this.inResupply = inFortResupply || inCityResupply
     if (this.inResupply) {
       this.resupplyTimer -= dt
@@ -1322,7 +1472,8 @@ export class GameEngine {
     } else if (s.team === 'blue') {
       if (!this.cityCaptured) {
         // Stage 1: Blue army converges on the Central City Town Plaza to secure the city!
-        goal.set(clamp(s.laneX * 0.7, -5, 5), 0, ((s.id % 5) - 2) * 2.2)
+        const cc = this.world.cityCenter
+        goal.set(cc.x + clamp(s.laneX * 0.7, -5, 5), 0, cc.z + ((s.id % 5) - 2) * 2.2)
         stopRange = 2.4
       } else {
         // Stage 2: City secured — Blue army storms the Red Fort!
@@ -1471,10 +1622,13 @@ export class GameEngine {
       this.reinforceTimer = BLUE_STATS.interval
       const alive = this.soldiers.filter((s) => s.team === 'blue' && !s.isPlayer && s.alive).length
       const count = Math.min(BLUE_STATS.reinforce, BLUE_STATS.max - alive)
-      const spawnZ = this.cityCaptured ? CITY_Z + 8 : BLUE_Z - 6
+      const cc = this.world.cityCenter
+      const rp = this.world.resupplyPosition
+      const spawnX = this.cityCaptured ? cc.x : rp.x * 0.25
+      const spawnZ = this.cityCaptured ? cc.z + 8 : rp.z - 6
       for (let i = 0; i < count; i++) {
         const side = i === 0 ? -1 : 1
-        const ally = this.createSoldier('blue', new THREE.Vector3(side * 4, 0, spawnZ))
+        const ally = this.createSoldier('blue', new THREE.Vector3(spawnX + side * 4, 0, spawnZ))
         ally.laneX = side * (3 + Math.random() * 4)
       }
       if (count > 0) {
@@ -1679,11 +1833,12 @@ export class GameEngine {
 
     // Stage 1: Capture the Central City Town Plaza first!
     if (!this.cityCaptured) {
-      const inCityCircle = p.alive && Math.hypot(p.pos.x, p.pos.z - CITY_Z) < CITY_CAPTURE_RADIUS
+      const cc = this.world.cityCenter
+      const inCityCircle = p.alive && Math.hypot(p.pos.x - cc.x, p.pos.z - cc.z) < CITY_CAPTURE_RADIUS
       let cStatus: CaptureStatus = 'idle'
       if (inCityCircle) {
         const contested = this.soldiers.some(
-          (s) => s.alive && s.team === 'red' && Math.hypot(s.pos.x, s.pos.z - CITY_Z) < CITY_CAPTURE_RADIUS + 1.5,
+          (s) => s.alive && s.team === 'red' && Math.hypot(s.pos.x - cc.x, s.pos.z - cc.z) < CITY_CAPTURE_RADIUS + 1.5,
         )
         cStatus = contested ? 'contested' : 'capturing'
         if (!contested) this.cityCapture = Math.min(1, this.cityCapture + dt / CITY_CAPTURE_TIME)
@@ -1941,8 +2096,11 @@ export class GameEngine {
     this.camLook.copy(this.camPos).add(dir)
     this.camera.lookAt(this.camLook)
 
-    this.sun.position.copy(p.pos).add(this.sunOffset)
-    this.sun.target.position.copy(p.pos)
+    // Texel-stabilized shadow frustum tracking keeps sharp shadows across fort walls & central city structures
+    const snapX = Math.round(p.pos.x * 2) * 0.5
+    const snapZ = Math.round(p.pos.z * 2) * 0.5
+    this.sun.target.position.set(snapX, 0, snapZ)
+    this.sun.position.set(snapX + this.sunOffset.x, this.sunOffset.y, snapZ + this.sunOffset.z)
     this.world.sky.position.copy(this.camPos)
   }
 }

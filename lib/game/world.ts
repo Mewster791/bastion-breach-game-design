@@ -15,6 +15,14 @@ import {
   WALL_T,
 } from './constants'
 import {
+  CELL_SIZE_X,
+  CELL_SIZE_Z,
+  blueSpawnWorldPos,
+  crossbowCellToWorldDef,
+  gridToWorld,
+  type CustomMapLayout,
+} from './custom-map'
+import {
   createDirtTexture,
   createGroundTexture,
   createLiquidTexture,
@@ -401,9 +409,23 @@ export const MAP_SPECS: Record<MapId, MapSpec> = {
   },
 }
 
-/** Uniformly selects 1 of the 10 maps with an exact 1/10 (10%) probability each round. */
+/** Uniformly selects 1 of the 10 default maps with an exact 1/10 (10%) probability. */
 export function pickRandomMap(): MapId {
   return MAP_IDS[Math.floor(Math.random() * MAP_IDS.length)]
+}
+
+/**
+ * Selects the next battlefield across the 10 default battlefields plus the saved custom JSON layout (if present).
+ */
+export function pickNextBattlefield(hasCustomMap: boolean): { mapId: MapId; useCustom: boolean } {
+  if (hasCustomMap) {
+    const roll = Math.floor(Math.random() * (MAP_IDS.length + 1))
+    if (roll === MAP_IDS.length) {
+      return { mapId: 'valley', useCustom: true }
+    }
+    return { mapId: MAP_IDS[roll], useCustom: false }
+  }
+  return { mapId: pickRandomMap(), useCustom: false }
 }
 
 export interface Collider {
@@ -441,11 +463,13 @@ class WavingFlag {
 
 export interface WorldRefs {
   map: MapSpec
+  isCustom: boolean
   root: THREE.Group
   sky: THREE.Mesh
   colliders: Collider[]
   cityAvenues: number[]
   redPosts: RedPostDef[]
+  playerSpawnPos: THREE.Vector3
   blueSpawnOffsets: [number, number][]
   crossbowDefs: [number, number, number, number, number][]
   redFlag: THREE.Object3D
@@ -468,14 +492,26 @@ export interface WorldRefs {
 }
 
 const teamColors = {
-  blue: { cloth: '#1f5fc4', roof: '#28467a', trim: '#e3b448' },
-  red: { cloth: '#b4232a', roof: '#7a2525', trim: '#2b2b2b' },
+  blue: { cloth: '#1f5fc4', emissive: '#2678ff', roof: '#28467a', trim: '#e3b448' },
+  red: { cloth: '#b4232a', emissive: '#ff2b36', roof: '#7a2525', trim: '#2b2b2b' },
 }
 
-export function buildWorld(scene: THREE.Scene, mapId: MapId = 'valley'): WorldRefs {
-  const map = MAP_SPECS[mapId]
+export function buildWorld(
+  scene: THREE.Scene,
+  mapId: MapId = 'valley',
+  customLayout: CustomMapLayout | null = null,
+): WorldRefs {
+  const baseMap = MAP_SPECS[customLayout ? customLayout.biome : mapId]
+  const map: MapSpec = customLayout
+    ? {
+        ...baseMap,
+        name: customLayout.name,
+        cityName: customLayout.cityName,
+        subtitle: `Custom siege layout · ${baseMap.name} biome`,
+      }
+    : baseMap
   const root = new THREE.Group()
-  root.name = `world-${mapId}`
+  root.name = customLayout ? `world-custom-${customLayout.biome}` : `world-${mapId}`
   scene.add(root)
 
   const colliders: Collider[] = []
@@ -498,12 +534,12 @@ export function buildWorld(scene: THREE.Scene, mapId: MapId = 'valley'): WorldRe
   const vermilionMat = new THREE.MeshStandardMaterial({ color: '#c9382b', roughness: 0.65 })
   const windowMat =
     map.cityStyle === 'nocturne'
-      ? new THREE.MeshStandardMaterial({ color: '#ffd080', emissive: '#ff9d2e', emissiveIntensity: 1.5, roughness: 0.3 })
+      ? new THREE.MeshStandardMaterial({ color: '#ffd080', emissive: '#ff9d2e', emissiveIntensity: 1.2, roughness: 0.3 })
       : new THREE.MeshStandardMaterial({ color: '#283645', metalness: 0.4, roughness: 0.35 })
   const emberMat = new THREE.MeshStandardMaterial({
     color: map.cityStyle === 'marsh' ? '#7affd4' : '#ff9d3b',
     emissive: map.cityStyle === 'marsh' ? '#1fbf8f' : '#ff5d0a',
-    emissiveIntensity: 1.8,
+    emissiveIntensity: 1.45,
     roughness: 0.4,
   })
 
@@ -555,10 +591,17 @@ export function buildWorld(scene: THREE.Scene, mapId: MapId = 'valley'): WorldRe
     parent.add(stand)
   }
 
-  const makeFlag = (color: string, phase: number) => {
+  const makeFlag = (team: 'blue' | 'red', phase: number) => {
+    const tc = teamColors[team]
     const geo = new THREE.PlaneGeometry(3.2, 2, 16, 8)
     geo.translate(1.6, 0, 0)
-    const mat = new THREE.MeshStandardMaterial({ color, side: THREE.DoubleSide, roughness: 0.8 })
+    const mat = new THREE.MeshStandardMaterial({
+      color: tc.cloth,
+      emissive: tc.emissive,
+      emissiveIntensity: 1.38,
+      side: THREE.DoubleSide,
+      roughness: 0.72,
+    })
     const mesh = new THREE.Mesh(geo, mat)
     mesh.castShadow = true
     const wf = new WavingFlag(mesh, phase)
@@ -708,11 +751,12 @@ export function buildWorld(scene: THREE.Scene, mapId: MapId = 'valley'): WorldRe
           const roof = new THREE.Mesh(new THREE.ConeGeometry(TOWER_R + 0.9, 5, 20), fortRoofMat)
           roof.position.set(tx, TOWER_H + 3.1, tz)
           roof.castShadow = true
+          roof.receiveShadow = true
           fort.add(roof)
           const pennantPole = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 2.4), ironMat)
           pennantPole.position.set(tx, TOWER_H + 6.6, tz)
           fort.add(pennantPole)
-          const pennant = makeFlag(colors.cloth, tx + tz)
+          const pennant = makeFlag(team, tx + tz)
           pennant.scale.set(0.4, 0.35, 0.4)
           pennant.position.set(tx, TOWER_H + 7.4, tz)
           fort.add(pennant)
@@ -725,12 +769,14 @@ export function buildWorld(scene: THREE.Scene, mapId: MapId = 'valley'): WorldRe
       const post = new THREE.Mesh(new THREE.BoxGeometry(0.7, 6.6, 0.9), darkWoodMat)
       post.position.set(side * (GATE_HALF - 0.3), 3.3, frontZ + s * (WALL_T / 2 + 0.3))
       post.castShadow = true
+      post.receiveShadow = true
       fort.add(post)
       addBrazier(fort, side * (GATE_HALF + 1.8), 0, frontZ + s * (WALL_T / 2 + 1.3))
     }
     const beam = new THREE.Mesh(new THREE.BoxGeometry(GATE_HALF * 2 + 0.6, 0.7, 0.9), darkWoodMat)
     beam.position.set(0, 6.6, frontZ + s * (WALL_T / 2 + 0.3))
     beam.castShadow = true
+    beam.receiveShadow = true
     fort.add(beam)
     for (let bx = -GATE_HALF + 0.7; bx <= GATE_HALF - 0.6; bx += 0.75) {
       const bar = new THREE.Mesh(new THREE.BoxGeometry(0.12, 1.6, 0.12), ironMat)
@@ -755,11 +801,18 @@ export function buildWorld(scene: THREE.Scene, mapId: MapId = 'valley'): WorldRe
     keepRoof.scale.set(1, 1, 0.55)
     keepRoof.position.set(0, 13.5, keepZ)
     keepRoof.castShadow = true
+    keepRoof.receiveShadow = true
     fort.add(keepRoof)
     const door = new THREE.Mesh(new THREE.BoxGeometry(3, 4.5, 0.3), darkWoodMat)
     door.position.set(0, 2.25, keepZ + s * 4.6)
     fort.add(door)
-    const bannerMat = new THREE.MeshStandardMaterial({ color: colors.cloth, roughness: 0.85, side: THREE.DoubleSide })
+    const bannerMat = new THREE.MeshStandardMaterial({
+      color: colors.cloth,
+      emissive: colors.emissive,
+      emissiveIntensity: 1.32,
+      roughness: 0.75,
+      side: THREE.DoubleSide,
+    })
     const trimMat = new THREE.MeshStandardMaterial({ color: colors.trim, roughness: 0.6 })
     for (const bx of [-6, 6]) {
       const banner = new THREE.Mesh(new THREE.PlaneGeometry(2.2, 5.5), bannerMat)
@@ -813,15 +866,15 @@ export function buildWorld(scene: THREE.Scene, mapId: MapId = 'valley'): WorldRe
     fort.add(base)
 
     if (team === 'blue') {
-      const flag = makeFlag(teamColors.blue.cloth, 0)
+      const flag = makeFlag('blue', 0)
       flag.position.set(0.12, flagTopY, cz)
       fort.add(flag)
     } else {
-      const red = makeFlag(teamColors.red.cloth, 1.3)
+      const red = makeFlag('red', 1.3)
       redFlagGroup.add(red)
       redFlagGroup.position.set(0.12, flagTopY, cz)
       fort.add(redFlagGroup)
-      const blue = makeFlag(teamColors.blue.cloth, 2.1)
+      const blue = makeFlag('blue', 2.1)
       blueCaptureGroup.add(blue)
       blueCaptureGroup.position.set(0.12, flagBottomY, cz)
       blueCaptureGroup.visible = false
@@ -1046,86 +1099,114 @@ export function buildWorld(scene: THREE.Scene, mapId: MapId = 'valley'): WorldRe
     }
   }
 
-  // Place 16 multi-part buildings cleanly inside the 8 City Districts (leaving all 3 avenues & 3 cross-streets clear!)
-  const innerBlocks: [number, number, number, number, number][] = [
-    [-11.5, -20.0, 6.8, 6.4, 2],
-    [-11.5, -29.5, 6.6, 6.2, 1],
-    [11.5, -20.0, 6.8, 6.4, 2],
-    [11.5, -29.5, 6.6, 6.2, 1],
-    [-11.5, 20.0, 6.8, 6.4, 2],
-    [-11.5, 29.5, 6.6, 6.2, 1],
-    [11.5, 20.0, 6.8, 6.4, 2],
-    [11.5, 29.5, 6.6, 6.2, 1],
-  ]
-  innerBlocks.forEach(([bx, bz, bw, bd, st], idx) => buildCityHouse(bx, bz, bw, bd, st, idx))
+  const townWorld = customLayout ? gridToWorld(customLayout.townSquare.col, customLayout.townSquare.row) : { x: 0, z: CITY_Z }
+  const cityCenter = new THREE.Vector3(townWorld.x, 0, townWorld.z)
 
-  const outerBlocks: [number, number, number, number, number][] = [
-    [-34.5, -12.5, 8.2, 7.4, 2],
-    [-34.5, -26.5, 8.0, 7.2, 2],
-    [34.5, -12.5, 8.2, 7.4, 2],
-    [34.5, -26.5, 8.0, 7.2, 2],
-    [-34.5, 12.5, 8.2, 7.4, 2],
-    [-34.5, 26.5, 8.0, 7.2, 2],
-    [34.5, 12.5, 8.2, 7.4, 2],
-    [34.5, 26.5, 8.0, 7.2, 2],
-  ]
-  outerBlocks.forEach(([bx, bz, bw, bd, st], idx) => buildCityHouse(bx, bz, bw, bd, st, idx + 1))
+  if (customLayout) {
+    // Render custom grid-placed fortified walls with crenelated stone caps & full colliders
+    const wallW = CELL_SIZE_X - 0.55
+    const wallD = CELL_SIZE_Z - 0.65
+    const wallH = 5.8
+    for (const wCell of customLayout.walls) {
+      const { x: wx, z: wz } = gridToWorld(wCell.col, wCell.row)
+      addBlock(cityGroup, stoneMat, wallW, wallH, wallD, wx, wallH / 2, wz, 3.5, true)
+      addBlock(cityGroup, stoneMat, wallW + 0.35, 0.65, wallD + 0.35, wx, wallH + 0.32, wz, 3.5, false)
+    }
+  } else {
+    // Place 16 multi-part buildings cleanly inside the 8 City Districts (leaving all 3 avenues & 3 cross-streets clear!)
+    const innerBlocks: [number, number, number, number, number][] = [
+      [-11.5, -20.0, 6.8, 6.4, 2],
+      [-11.5, -29.5, 6.6, 6.2, 1],
+      [11.5, -20.0, 6.8, 6.4, 2],
+      [11.5, -29.5, 6.6, 6.2, 1],
+      [-11.5, 20.0, 6.8, 6.4, 2],
+      [-11.5, 29.5, 6.6, 6.2, 1],
+      [11.5, 20.0, 6.8, 6.4, 2],
+      [11.5, 29.5, 6.6, 6.2, 1],
+    ]
+    innerBlocks.forEach(([bx, bz, bw, bd, st], idx) => buildCityHouse(bx, bz, bw, bd, st, idx))
 
-  // Market stalls / Torii gates / Bazaar canopies & streetlamps framing the Central Town Plaza (outside the 6.5m capture ring!)
-  const awningColors = ['#c94038', '#2d6bc4', '#d99b26', '#2e856e']
-  const stallCorners: [number, number][] = [
-    [-10.5, -10.5],
-    [10.5, -10.5],
-    [-10.5, 10.5],
-    [10.5, 10.5],
-  ]
-  stallCorners.forEach(([sx, sz], idx) => {
-    const stall = new THREE.Group()
-    stall.position.set(sx, 0, sz)
-    cityGroup.add(stall)
-    addBlock(stall, woodMat, 2.4, 0.95, 1.6, 0, 0.475, 0, 1.6, false)
-    addCollider(sx, sz, 2.4, 1.6, 0.95)
-    for (const px of [-1.05, 1.05]) {
-      for (const pz of [-0.65, 0.65]) {
-        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 2.4, 6), darkWoodMat)
-        post.position.set(px, 1.2, pz)
-        stall.add(post)
+    const outerBlocks: [number, number, number, number, number][] = [
+      [-34.5, -12.5, 8.2, 7.4, 2],
+      [-34.5, -26.5, 8.0, 7.2, 2],
+      [34.5, -12.5, 8.2, 7.4, 2],
+      [34.5, -26.5, 8.0, 7.2, 2],
+      [-34.5, 12.5, 8.2, 7.4, 2],
+      [-34.5, 26.5, 8.0, 7.2, 2],
+      [34.5, 12.5, 8.2, 7.4, 2],
+      [34.5, 26.5, 8.0, 7.2, 2],
+    ]
+    outerBlocks.forEach(([bx, bz, bw, bd, st], idx) => buildCityHouse(bx, bz, bw, bd, st, idx + 1))
+
+    // Market stalls framing the Central Town Plaza
+    const awningColors = ['#c94038', '#2d6bc4', '#d99b26', '#2e856e']
+    const stallCorners: [number, number][] = [
+      [-10.5, -10.5],
+      [10.5, -10.5],
+      [-10.5, 10.5],
+      [10.5, 10.5],
+    ]
+    stallCorners.forEach(([sx, sz], idx) => {
+      const stall = new THREE.Group()
+      stall.position.set(sx, 0, sz)
+      cityGroup.add(stall)
+      addBlock(stall, woodMat, 2.4, 0.95, 1.6, 0, 0.475, 0, 1.6, false)
+      addCollider(sx, sz, 2.4, 1.6, 0.95)
+      for (const px of [-1.05, 1.05]) {
+        for (const pz of [-0.65, 0.65]) {
+          const post = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 2.4, 6), darkWoodMat)
+          post.position.set(px, 1.2, pz)
+          stall.add(post)
+        }
+      }
+      const canopy = new THREE.Mesh(
+        new THREE.BoxGeometry(2.7, 0.14, 2.0),
+        new THREE.MeshStandardMaterial({ color: awningColors[idx % awningColors.length], roughness: 0.8 }),
+      )
+      canopy.position.set(0, 2.42, 0)
+      canopy.rotation.x = sz > 0 ? 0.12 : -0.12
+      canopy.castShadow = true
+      canopy.receiveShadow = true
+      stall.add(canopy)
+    })
+
+    // Signature Sakura Torii Gates or Marble Triumphal Arches on Main Avenue
+    if (map.cityStyle === 'sakura' || map.cityStyle === 'marble') {
+      const archMat = map.cityStyle === 'sakura' ? vermilionMat : plasterMat
+      for (const az of [-15, 15]) {
+        for (const side of [-1, 1]) {
+          const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.36, 5.2, 12), archMat)
+          pillar.position.set(side * 4.4, 2.6, az)
+          pillar.castShadow = true
+          pillar.receiveShadow = true
+          cityGroup.add(pillar)
+          addCollider(side * 4.4, az, 0.8, 0.8, 5.2)
+        }
+        const crossBeam = new THREE.Mesh(new THREE.BoxGeometry(10.6, 0.45, 0.65), archMat)
+        crossBeam.position.set(0, 5.1, az)
+        crossBeam.castShadow = true
+        crossBeam.receiveShadow = true
+        cityGroup.add(crossBeam)
       }
     }
-    const canopy = new THREE.Mesh(
-      new THREE.BoxGeometry(2.7, 0.14, 2.0),
-      new THREE.MeshStandardMaterial({ color: awningColors[idx % awningColors.length], roughness: 0.8 }),
-    )
-    canopy.position.set(0, 2.42, 0)
-    canopy.rotation.x = sz > 0 ? 0.12 : -0.12
-    canopy.castShadow = true
-    stall.add(canopy)
-  })
 
-  // Signature Sakura Torii Gates or Marble Triumphal Arches on Main Avenue
-  if (map.cityStyle === 'sakura' || map.cityStyle === 'marble') {
-    const archMat = map.cityStyle === 'sakura' ? vermilionMat : plasterMat
-    for (const az of [-15, 15]) {
-      for (const side of [-1, 1]) {
-        const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.36, 5.2, 12), archMat)
-        pillar.position.set(side * 4.4, 2.6, az)
-        pillar.castShadow = true
-        cityGroup.add(pillar)
-        addCollider(side * 4.4, az, 0.8, 0.8, 5.2)
-      }
-      const crossBeam = new THREE.Mesh(new THREE.BoxGeometry(10.6, 0.45, 0.65), archMat)
-      crossBeam.position.set(0, 5.1, az)
-      crossBeam.castShadow = true
-      cityGroup.add(crossBeam)
+    // Low tactical street crates along avenues
+    for (const [bx, bz] of [
+      [-24.2, -8],
+      [24.2, 8],
+      [-19.8, 14],
+      [19.8, -14],
+    ]) {
+      addBlock(cityGroup, woodMat, 1.5, 1.0, 1.5, bx, 0.5, bz, 1.5, true)
     }
   }
 
   // Street braziers / lanterns illuminating the Central Plaza & Avenues
   for (const [lx, lz] of [
-    [-6.2, -13.2],
-    [6.2, -13.2],
-    [-6.2, 13.2],
-    [6.2, 13.2],
+    [cityCenter.x - 6.8, cityCenter.z - 8.5],
+    [cityCenter.x + 6.8, cityCenter.z - 8.5],
+    [cityCenter.x - 6.8, cityCenter.z + 8.5],
+    [cityCenter.x + 6.8, cityCenter.z + 8.5],
     [-17.2, 0],
     [17.2, 0],
     [-26.8, -22],
@@ -1133,44 +1214,35 @@ export function buildWorld(scene: THREE.Scene, mapId: MapId = 'valley'): WorldRe
     [-26.8, 22],
     [26.8, 22],
   ]) {
-    addBrazier(cityGroup, lx, 0, lz)
+    if (!colliders.some((c) => c.box.containsPoint(new THREE.Vector3(lx, 0.5, lz)))) {
+      addBrazier(cityGroup, lx, 0, lz)
+    }
   }
 
-  // Low tactical street crates & cobble barricades along avenues (low: true jumpable cover, leaving >5m clear lane)
-  for (const [bx, bz] of [
-    [-24.2, -8],
-    [24.2, 8],
-    [-19.8, 14],
-    [19.8, -14],
-  ]) {
-    addBlock(cityGroup, woodMat, 1.5, 1.0, 1.5, bx, 0.5, bz, 1.5, true)
-  }
-
-  // Central City Town Plaza Flagpole & Stage-1 Capture / Forward Resupply Circle at (0, 0, 0)
-  const cityCenter = new THREE.Vector3(0, 0, CITY_Z)
+  // Central City Town Plaza Flagpole & Stage-1 Capture / Forward Resupply Circle
   const cityFlagTopY = 11.2
   const cityFlagBottomY = 2.0
   const cityPole = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.15, 12.4, 10), ironMat)
-  cityPole.position.set(0, 6.2, CITY_Z)
+  cityPole.position.set(cityCenter.x, 6.2, cityCenter.z)
   cityPole.castShadow = true
   cityGroup.add(cityPole)
   const cityFinial = new THREE.Mesh(new THREE.SphereGeometry(0.25, 12, 8), goldMat)
-  cityFinial.position.set(0, 12.5, CITY_Z)
+  cityFinial.position.set(cityCenter.x, 12.5, cityCenter.z)
   cityGroup.add(cityFinial)
   const cityPedestal = new THREE.Mesh(new THREE.CylinderGeometry(1.05, 1.35, 0.55, 16), stoneMat)
-  cityPedestal.position.set(0, 0.275, CITY_Z)
+  cityPedestal.position.set(cityCenter.x, 0.275, cityCenter.z)
   cityPedestal.receiveShadow = true
   cityGroup.add(cityPedestal)
-  addCollider(0, CITY_Z, 2.2, 2.2, 0.55)
+  addCollider(cityCenter.x, cityCenter.z, 2.2, 2.2, 0.55)
 
   const cityRedFlag = new THREE.Group()
-  cityRedFlag.add(makeFlag(teamColors.red.cloth, 0.7))
-  cityRedFlag.position.set(0.12, cityFlagTopY, CITY_Z)
+  cityRedFlag.add(makeFlag('red', 0.7))
+  cityRedFlag.position.set(cityCenter.x + 0.12, cityFlagTopY, cityCenter.z)
   cityGroup.add(cityRedFlag)
 
   const cityBlueFlag = new THREE.Group()
-  cityBlueFlag.add(makeFlag(teamColors.blue.cloth, 1.9))
-  cityBlueFlag.position.set(0.12, cityFlagBottomY, CITY_Z)
+  cityBlueFlag.add(makeFlag('blue', 1.9))
+  cityBlueFlag.position.set(cityCenter.x + 0.12, cityFlagBottomY, cityCenter.z)
   cityBlueFlag.visible = false
   cityGroup.add(cityBlueFlag)
 
@@ -1179,7 +1251,7 @@ export function buildWorld(scene: THREE.Scene, mapId: MapId = 'valley'): WorldRe
     new THREE.MeshBasicMaterial({ color: '#f2c14e', transparent: true, opacity: 0.9, side: THREE.DoubleSide }),
   )
   cityRing.rotation.x = -Math.PI / 2
-  cityRing.position.set(0, 0.07, CITY_Z)
+  cityRing.position.set(cityCenter.x, 0.07, cityCenter.z)
   cityGroup.add(cityRing)
 
   const cityDisc = new THREE.Mesh(
@@ -1187,7 +1259,7 @@ export function buildWorld(scene: THREE.Scene, mapId: MapId = 'valley'): WorldRe
     new THREE.MeshBasicMaterial({ color: '#f2c14e', transparent: true, opacity: 0.14, depthWrite: false }),
   )
   cityDisc.rotation.x = -Math.PI / 2
-  cityDisc.position.set(0, 0.06, CITY_Z)
+  cityDisc.position.set(cityCenter.x, 0.06, cityCenter.z)
   cityGroup.add(cityDisc)
 
   // Red Fort Final Conquest Capture Circle
@@ -1206,8 +1278,9 @@ export function buildWorld(scene: THREE.Scene, mapId: MapId = 'valley'): WorldRe
   captureDisc.position.set(0, 0.06, RED_Z)
   root.add(captureDisc)
 
-  // Blue Fort Resupply Ring
-  const resupplyPosition = new THREE.Vector3(12, 0, BLUE_Z)
+  // Blue Ring Spawn & Resupply Ring
+  const customBluePos = customLayout ? blueSpawnWorldPos(customLayout) : { x: 12, z: BLUE_Z }
+  const resupplyPosition = new THREE.Vector3(customBluePos.x, 0, customBluePos.z)
   const resupplyRing = new THREE.Mesh(
     new THREE.RingGeometry(3.6, 4, 56),
     new THREE.MeshBasicMaterial({ color: '#58a6ff', transparent: true, opacity: 0.85, side: THREE.DoubleSide }),
@@ -1553,12 +1626,12 @@ export function buildWorld(scene: THREE.Scene, mapId: MapId = 'valley'): WorldRe
   for (const [gx, gz] of glacisSpots) {
     redPosts.push({ pos: new THREE.Vector3(gx, 0, gz), leash: 30 })
   }
-  // 12 Central City Garrison defenders (Town Square + 3 Avenues + South Gates)
+  // 12 Central City Garrison defenders (anchored around cityCenter + 3 Avenues + South Gates)
   const cityGarrisonSpots: [number, number, number][] = [
-    [-4.5, -4.5, 24],
-    [4.5, -4.5, 24],
-    [-4.5, 4.5, 24],
-    [4.5, 4.5, 24],
+    [cityCenter.x - 4.5, cityCenter.z - 4.5, 24],
+    [cityCenter.x + 4.5, cityCenter.z - 4.5, 24],
+    [cityCenter.x - 4.5, cityCenter.z + 4.5, 24],
+    [cityCenter.x + 4.5, cityCenter.z + 4.5, 24],
     [-22, 36, 26],
     [0, 36, 26],
     [22, 36, 26],
@@ -1569,34 +1642,62 @@ export function buildWorld(scene: THREE.Scene, mapId: MapId = 'valley'): WorldRe
     [0, -34, 28],
   ]
   for (const [cx, cz, leash] of cityGarrisonSpots) {
-    redPosts.push({ pos: new THREE.Vector3(cx, 0, cz), leash })
+    if (!colliders.some((c) => c.box.containsPoint(new THREE.Vector3(cx, 0.5, cz)))) {
+      redPosts.push({ pos: new THREE.Vector3(cx, 0, cz), leash })
+    }
   }
+
+  const playerSpawnPos = customLayout
+    ? new THREE.Vector3(resupplyPosition.x, 0, Math.min(BLUE_Z + 18, resupplyPosition.z - 4))
+    : new THREE.Vector3(0, 0, BLUE_Z - 10)
 
   const blueSpawnOffsets: [number, number][] = []
   for (let i = 0; i < 14; i++) {
     blueSpawnOffsets.push([-12 + (i % 7) * 4, -14 - Math.floor(i / 7) * 3.5])
   }
 
-  // 8 Outward-facing Red Fort crossbows
+  // 8 Outward-facing Red Fort crossbows (default battlements or custom layout)
   const frontWallZ = RED_Z + FORT_HALF
-  const crossbowDefs: [number, number, number, number, number][] = [
-    [-FORT_HALF, TOWER_H + 0.65, frontWallZ, -0.65, 1],
-    [FORT_HALF, TOWER_H + 0.65, frontWallZ, 0.65, 1],
-    [-16, WALL_H + 0.1, frontWallZ, -0.15, 1],
-    [-8, WALL_H + 0.1, frontWallZ, 0, 1],
-    [8, WALL_H + 0.1, frontWallZ, 0, 1],
-    [16, WALL_H + 0.1, frontWallZ, 0.15, 1],
-    [-FORT_HALF, WALL_H + 0.1, RED_Z + 12, -1, 0],
-    [FORT_HALF, WALL_H + 0.1, RED_Z + 12, 1, 0],
-  ]
+  const crossbowDefs: [number, number, number, number, number][] = customLayout
+    ? customLayout.crossbows.map((c) => {
+        const def = crossbowCellToWorldDef(c)
+        const [bx, by, bz] = def
+        // If mounted outside the main Red Fort walls, build a fortified stone turret pedestal underneath
+        if (by < WALL_H - 0.5) {
+          const bastion = new THREE.Mesh(new THREE.CylinderGeometry(2.1, 2.5, by, 14), stoneMat)
+          bastion.position.set(bx, by / 2, bz)
+          bastion.castShadow = true
+          bastion.receiveShadow = true
+          root.add(bastion)
+          const rim = new THREE.Mesh(new THREE.CylinderGeometry(2.35, 2.15, 0.55, 14), stoneMat)
+          rim.position.set(bx, by - 0.1, bz)
+          rim.castShadow = true
+          rim.receiveShadow = true
+          root.add(rim)
+          addCollider(bx, bz, 4.4, 4.4, by)
+        }
+        return def
+      })
+    : [
+        [-FORT_HALF, TOWER_H + 0.65, frontWallZ, -0.65, 1],
+        [FORT_HALF, TOWER_H + 0.65, frontWallZ, 0.65, 1],
+        [-16, WALL_H + 0.1, frontWallZ, -0.15, 1],
+        [-8, WALL_H + 0.1, frontWallZ, 0, 1],
+        [8, WALL_H + 0.1, frontWallZ, 0, 1],
+        [16, WALL_H + 0.1, frontWallZ, 0.15, 1],
+        [-FORT_HALF, WALL_H + 0.1, RED_Z + 12, -1, 0],
+        [FORT_HALF, WALL_H + 0.1, RED_Z + 12, 1, 0],
+      ]
 
   return {
     map,
+    isCustom: Boolean(customLayout),
     root,
     sky,
     colliders,
     cityAvenues,
     redPosts,
+    playerSpawnPos,
     blueSpawnOffsets,
     crossbowDefs,
     redFlag: redFlagGroup,

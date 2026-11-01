@@ -1,10 +1,31 @@
-import { BriefcaseMedical, Castle, Crosshair, Flag, Heart, Shield, Skull, Sword, Target, Users } from 'lucide-react'
+import {
+  BriefcaseMedical,
+  Castle,
+  Crosshair,
+  Flag,
+  Heart,
+  Shield,
+  Skull,
+  Sword,
+  Target,
+  Users,
+  Volume2,
+  VolumeX,
+} from 'lucide-react'
 import type { HudSnapshot } from '@/lib/game/engine'
 import { cn } from '@/lib/utils'
 
 const panel = 'rounded-xl border border-white/10 bg-[#0d1422]/85 shadow-lg'
 
-export function Hud({ s }: { s: HudSnapshot }) {
+export function Hud({
+  s,
+  muted,
+  onToggleMute,
+}: {
+  s: HudSnapshot
+  muted: boolean
+  onToggleMute: () => void
+}) {
   return (
     <div className="pointer-events-none absolute inset-0 select-none text-white" aria-live="polite">
       {s.damageAt > 0 && (
@@ -19,6 +40,7 @@ export function Hud({ s }: { s: HudSnapshot }) {
 
       <ObjectiveBar s={s} />
       <ForcesPanel s={s} />
+      <SoundToggleButton muted={muted} onToggleMute={onToggleMute} />
       <Reticle s={s} />
       <Toasts s={s} />
       <HealthPanel s={s} />
@@ -35,10 +57,35 @@ export function Hud({ s }: { s: HudSnapshot }) {
         </div>
       )}
 
-      <p className="absolute bottom-3 left-1/2 hidden -translate-x-1/2 text-[11px] text-white/60 lg:block">
-        WASD move · Shift run · Space jump · 1–3 weapons · 4/H med kit · Left click attack · Right click / F shield
+      <p className="absolute bottom-3 left-1/2 hidden -translate-x-1/2 text-[11px] text-white/60 lg:block whitespace-nowrap">
+        WASD move · Shift run · Space jump · 1–3 weapons · 4/H med kit · M mute · Left click attack · Right click / F shield
       </p>
     </div>
+  )
+}
+
+function SoundToggleButton({ muted, onToggleMute }: { muted: boolean; onToggleMute: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation()
+        onToggleMute()
+      }}
+      onMouseDown={(e) => e.stopPropagation()}
+      aria-pressed={muted}
+      aria-label={muted ? 'Unmute background music' : 'Mute background music'}
+      title={muted ? 'Unmute music (M)' : 'Mute music (M)'}
+      className={cn(
+        panel,
+        'pointer-events-auto absolute right-4 top-4 flex h-10 items-center gap-2 px-3.5 text-xs font-semibold transition-colors whitespace-nowrap',
+        muted ? 'text-white/65 hover:bg-white/10 hover:text-white' : 'text-amber-200 hover:bg-white/10 hover:text-amber-100',
+      )}
+    >
+      {muted ? <VolumeX className="size-4 text-red-300" aria-hidden="true" /> : <Volume2 className="size-4 text-amber-300" aria-hidden="true" />}
+      <span>{muted ? 'Sound Off' : 'Sound On'}</span>
+      <span className="hidden font-mono text-[10px] text-white/45 sm:inline">(M)</span>
+    </button>
   )
 }
 

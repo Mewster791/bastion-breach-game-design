@@ -31,7 +31,7 @@ Swinging while your shield is up deals 25% less damage. Step into a blue ring in
 Game is inspired by War of Knights
 
 
-Current Version: 0.60
+Current Version: 0.80
 
 Version 0.2----31/10/2026
 Added readme add configurate things that ought to be configured. And included 21 fixes.
@@ -50,3 +50,6 @@ Added a central contested city between the forts on every map, expanded rotation
 
 Version 0.7----1/11/2026
 44 issues patched.
+
+Version 0.80----1/11/2026
+Graphics revamp with 4K directional sun shadows, SSAO contact shadows, and HDR Bloom on team banners with full WebGL disposal; added modular grid-based Map Creator with JSON serialization, rule enforcement, and map rotation integration; added dynamic HTML5 Audio background music engine with HUD mute toggle.
