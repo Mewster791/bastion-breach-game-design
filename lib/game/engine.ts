@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
 import {
   BLOCKING_SWORD_MULTIPLIER,
   BLUE_STATS,
@@ -12,15 +13,13 @@ import {
   RED_STATS,
   RED_Z,
   SHIELD_BLOCK_REDUCTION,
-  TOWER_H,
-  WALL_H,
   WEAPON_DAMAGE,
   WORLD_LIMIT_X,
   WORLD_LIMIT_Z,
   isInsideFort,
 } from './constants'
 import { createCrossbowModel, createSoldierModel, type CrossbowModel, type SoldierModel, type Team, type Weapon } from './models'
-import { buildWorld, type Collider, type WorldRefs } from './world'
+import { buildWorld, pickRandomMap, type Collider, type MapId, type WorldRefs } from './world'
 
 export type GameState = 'ready' | 'playing' | 'paused' | 'victory' | 'defeat'
 export type CaptureStatus = 'idle' | 'capturing' | 'contested'
@@ -33,6 +32,9 @@ export interface Toast {
 
 export interface HudSnapshot {
   state: GameState
+  mapId: MapId
+  mapName: string
+  mapSubtitle: string
   hp: number
   maxHp: number
   weapon: Weapon
@@ -132,6 +134,20 @@ const UP = new THREE.Vector3(0, 1, 0)
 const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v))
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t
 
+function detectSoftwareGl() {
+  try {
+    const gl = document.createElement('canvas').getContext('webgl2')
+    if (!gl) return true
+    const ext = gl.getExtension('WEBGL_debug_renderer_info')
+    const param = ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER
+    const gpu = String(gl.getParameter(param))
+    gl.getExtension('WEBGL_lose_context')?.loseContext()
+    return /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(gpu)
+  } catch {
+    return false
+  }
+}
+
 function angleDiff(a: number, b: number) {
   let d = b - a
   while (d > Math.PI) d -= Math.PI * 2
@@ -168,13 +184,17 @@ function segmentSphere(a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, r: 
 export class GameEngine {
   private renderer: THREE.WebGLRenderer
   private scene = new THREE.Scene()
+  private envTex: THREE.Texture | null = null
   private camera: THREE.PerspectiveCamera
+  private hemi: THREE.HemisphereLight
   private sun: THREE.DirectionalLight
   private sunOffset = new THREE.Vector3(-0.6, 0.45, 0.66).normalize().multiplyScalar(140)
-  private world: WorldRefs
-  private colliders: Collider[]
+  private world!: WorldRefs
+  private colliders: Collider[] = []
   private dynamic = new THREE.Group()
   private raf = 0
+  private timer = 0
+  private isSoftwareGl: boolean
   private clock = new THREE.Clock()
   private time = 0
   private listeners = new Set<() => void>()
@@ -233,13 +253,22 @@ export class GameEngine {
   private tmp = new THREE.Vector3()
   private tmp2 = new THREE.Vector3()
   private tmp3 = new THREE.Vector3()
+  private camRight = new THREE.Vector3()
+  private camShoulder = new THREE.Vector3()
+  private camBack = new THREE.Vector3()
+  private camPos = new THREE.Vector3()
+  private camLook = new THREE.Vector3()
   private camDir = new THREE.Vector3()
 
   constructor(private container: HTMLDivElement) {
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' })
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+    this.isSoftwareGl = detectSoftwareGl()
+    this.renderer = new THREE.WebGLRenderer({
+      antialias: !this.isSoftwareGl,
+      powerPreference: 'high-performance',
+    })
+    this.renderer.setPixelRatio(this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2))
     this.renderer.setSize(container.clientWidth, container.clientHeight)
-    this.renderer.shadowMap.enabled = true
+    this.renderer.shadowMap.enabled = !this.isSoftwareGl
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
     this.renderer.toneMappingExposure = 1.05
@@ -248,13 +277,20 @@ export class GameEngine {
     this.renderer.domElement.setAttribute('aria-label', 'Bastion Breach battlefield')
     container.appendChild(this.renderer.domElement)
 
-    this.camera = new THREE.PerspectiveCamera(65, container.clientWidth / container.clientHeight, 0.1, 1200)
-    this.scene.fog = new THREE.Fog('#e6d6bb', 110, 430)
+    const pmrem = new THREE.PMREMGenerator(this.renderer)
+    const roomEnv = new RoomEnvironment()
+    this.envTex = pmrem.fromScene(roomEnv, 0.04).texture
+    this.scene.environment = this.envTex
+    this.scene.environmentIntensity = 0.35
+    pmrem.dispose()
+    roomEnv.dispose()
 
-    const hemi = new THREE.HemisphereLight('#bcd8ff', '#5b6b3a', 0.85)
-    this.scene.add(hemi)
+    this.camera = new THREE.PerspectiveCamera(65, container.clientWidth / container.clientHeight, 0.1, 1200)
+
+    this.hemi = new THREE.HemisphereLight('#bcd8ff', '#5b6b3a', 0.85)
+    this.scene.add(this.hemi)
     this.sun = new THREE.DirectionalLight('#fff0d6', 2.6)
-    this.sun.castShadow = true
+    this.sun.castShadow = !this.isSoftwareGl
     this.sun.shadow.mapSize.set(2048, 2048)
     this.sun.shadow.camera.left = -55
     this.sun.shadow.camera.right = 55
@@ -266,12 +302,9 @@ export class GameEngine {
     this.sun.shadow.normalBias = 0.04
     this.sun.shadow.radius = 3
     this.scene.add(this.sun, this.sun.target)
-
-    this.world = buildWorld(this.scene)
-    this.colliders = this.world.colliders
     this.scene.add(this.dynamic)
 
-    this.reset()
+    this.reset(true)
     this.snapshot = this.buildSnapshot()
     this.bindInput()
     this.clock.start()
@@ -290,21 +323,24 @@ export class GameEngine {
   getSnapshot = () => this.snapshot
 
   start() {
-    if (this.state === 'victory' || this.state === 'defeat') this.reset()
+    if (this.state === 'victory' || this.state === 'defeat') this.reset(false)
     this.state = 'playing'
     this.requestLock()
     this.emit()
   }
 
   restart() {
-    this.reset()
+    this.reset(false)
     this.start()
   }
 
   dispose() {
     cancelAnimationFrame(this.raf)
+    window.clearTimeout(this.timer)
     this.unbindInput()
     if (document.pointerLockElement === this.renderer.domElement) document.exitPointerLock()
+    if (this.world) this.world.dispose()
+    if (this.envTex) this.envTex.dispose()
     this.renderer.dispose()
     this.renderer.domElement.remove()
     this.listeners.clear()
@@ -327,7 +363,22 @@ export class GameEngine {
     }
   }
 
-  private reset() {
+  private reset(initial = false) {
+    // Each of the 3 maps has an exact 1/3 probability of being played every round
+    const nextMapId = pickRandomMap()
+    if (this.world) this.world.dispose()
+    this.world = buildWorld(this.scene, nextMapId)
+    this.colliders = this.world.colliders
+
+    const m = this.world.map
+    this.scene.fog = new THREE.Fog(m.fogColor, m.fogNear, m.fogFar)
+    this.hemi.color.set(m.hemiSky)
+    this.hemi.groundColor.set(m.hemiGround)
+    this.hemi.intensity = m.hemiIntensity
+    this.sun.color.set(m.sunColor)
+    this.sun.intensity = m.sunIntensity
+    this.sunOffset.set(...m.sunDir).normalize().multiplyScalar(140)
+
     for (const child of [...this.dynamic.children]) this.dynamic.remove(child)
     this.soldiers = []
     this.projectiles = []
@@ -342,6 +393,8 @@ export class GameEngine {
     this.healRemaining = 0
     this.reinforceTimer = BLUE_STATS.interval
     this.crossbowNoticeShown = false
+    this.insideRedFort = false
+    this.inResupply = false
     this.playerVy = 0
     this.onGround = true
     this.camYaw = Math.PI
@@ -354,42 +407,20 @@ export class GameEngine {
     this.player.yaw = Math.PI
 
     for (let i = 0; i < BLUE_STATS.start; i++) {
-      const p = new THREE.Vector3(-10 + (i % 6) * 4, 0, BLUE_Z - 14 - Math.floor(i / 6) * 3)
-      this.createSoldier('blue', p)
+      const [ox, oz] = this.world.blueSpawnOffsets[i % this.world.blueSpawnOffsets.length]
+      const ally = this.createSoldier('blue', new THREE.Vector3(ox, 0, BLUE_Z + oz))
+      // Ensure balanced left/right lane distribution across maps (especially Twin Bridges)
+      ally.laneX = (i % 2 === 0 ? -1 : 1) * (2.5 + Math.random() * 4.5)
     }
 
-    const redPosts: THREE.Vector3[] = []
-    for (let i = 0; i < 8; i++) {
-      const a = (i / 8) * Math.PI * 2
-      redPosts.push(new THREE.Vector3(Math.cos(a) * 9, 0, RED_Z + Math.sin(a) * 9))
-    }
-    redPosts.push(new THREE.Vector3(-5, 0, RED_Z - 10), new THREE.Vector3(5, 0, RED_Z - 10))
-    redPosts.push(
-      new THREE.Vector3(-3, 0, RED_Z + 20),
-      new THREE.Vector3(3, 0, RED_Z + 20),
-      new THREE.Vector3(-9, 0, RED_Z + 19),
-      new THREE.Vector3(9, 0, RED_Z + 19),
-    )
-    for (let i = 0; i < 8; i++) {
-      redPosts.push(new THREE.Vector3(-14 + (i % 4) * 9.3 + (Math.random() - 0.5) * 2, 0, RED_Z + 34 + Math.floor(i / 4) * 12))
-    }
-    redPosts.forEach((post, i) => {
-      const s = this.createSoldier('red', post.clone())
-      s.post = post
-      s.leash = i >= 14 ? 28 : 20
+    for (const postDef of this.world.redPosts) {
+      const s = this.createSoldier('red', postDef.pos.clone())
+      s.post = postDef.pos
+      s.leash = postDef.leash
       s.yaw = 0
-    })
+    }
 
-    const front = RED_Z + FORT_HALF
-    const crossbowDefs: [number, number, number, number, number][] = [
-      [-FORT_HALF, TOWER_H + 0.65, front, -1, 1],
-      [FORT_HALF, TOWER_H + 0.65, front, 1, 1],
-      [-10, WALL_H + 0.1, front, 0, 1],
-      [10, WALL_H + 0.1, front, 0, 1],
-      [-FORT_HALF, WALL_H + 0.1, RED_Z + 12, -1, 0],
-      [FORT_HALF, WALL_H + 0.1, RED_Z + 12, 1, 0],
-    ]
-    for (const [x, y, z, dx, dz] of crossbowDefs) {
+    for (const [x, y, z, dx, dz] of this.world.crossbowDefs) {
       const model = createCrossbowModel()
       const dir = new THREE.Vector3(dx, 0, dz).normalize()
       model.root.position.set(x, y, z)
@@ -410,6 +441,15 @@ export class GameEngine {
     this.world.redFlag.visible = true
     this.world.blueCaptureFlag.position.y = this.world.flagBottomY
     this.world.blueCaptureFlag.visible = false
+
+    if (!initial) {
+      this.toasts.push({
+        id: ++this.toastId,
+        text: `Battlefield: ${m.name}`,
+        tone: 'info',
+        expires: this.time + 3.5,
+      })
+    }
   }
 
   private createSoldier(team: Team, pos: THREE.Vector3, isPlayer = false): Soldier {
@@ -591,6 +631,9 @@ export class GameEngine {
     const blues = this.soldiers.filter((s) => s.team === 'blue' && !s.isPlayer && s.alive).length
     return {
       state: this.state,
+      mapId: this.world.map.id,
+      mapName: this.world.map.name,
+      mapSubtitle: this.world.map.subtitle,
       hp: Math.max(0, Math.ceil(this.player.hp)),
       maxHp: this.player.maxHp,
       weapon: this.player.weapon,
@@ -627,8 +670,27 @@ export class GameEngine {
 
   // ---------- main loop ----------
 
+  private afterSoftwareDraw(cb: () => void) {
+    const gl = this.renderer.getContext() as WebGL2RenderingContext | null
+    if (!gl || typeof gl.fenceSync !== 'function') {
+      this.raf = requestAnimationFrame(cb)
+      return
+    }
+    const sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0)
+    gl.flush()
+    const poll = () => {
+      const status = sync && gl.getSyncParameter(sync, gl.SYNC_STATUS)
+      if (status === gl.UNSIGNALED) {
+        this.timer = window.setTimeout(poll, 5)
+      } else {
+        if (sync) gl.deleteSync(sync)
+        this.timer = window.setTimeout(cb, 80)
+      }
+    }
+    this.timer = window.setTimeout(poll, 5)
+  }
+
   private loop = () => {
-    this.raf = requestAnimationFrame(this.loop)
     const dt = Math.min(this.clock.getDelta(), 0.05)
     this.time += dt
     if (this.state === 'playing') this.update(dt)
@@ -639,6 +701,8 @@ export class GameEngine {
       this.toasts = this.toasts.filter((t) => t.expires > this.time)
       if (this.state === 'playing' || before !== this.toasts.length) this.emit()
     }
+    if (this.isSoftwareGl) this.afterSoftwareDraw(this.loop)
+    else this.raf = requestAnimationFrame(this.loop)
   }
 
   private update(dt: number) {
@@ -683,7 +747,7 @@ export class GameEngine {
   private groundHeightAt(x: number, z: number, y: number) {
     let h = 0
     for (const c of this.colliders) {
-      if (!c.low) continue
+      if (!c.low || c.movementOnly) continue
       const b = c.box
       if (x > b.min.x - 0.3 && x < b.max.x + 0.3 && z > b.min.z - 0.3 && z < b.max.z + 0.3 && b.max.y <= y + 0.08) {
         h = Math.max(h, b.max.y)
@@ -695,7 +759,7 @@ export class GameEngine {
   private resolveCollisions(pos: THREE.Vector3, r: number, footY: number) {
     for (const c of this.colliders) {
       const b = c.box
-      if (b.max.y <= footY + 0.05) continue
+      if (!c.movementOnly && b.max.y <= footY + 0.05) continue
       const cx = clamp(pos.x, b.min.x, b.max.x)
       const cz = clamp(pos.z, b.min.z, b.max.z)
       const dx = pos.x - cx
@@ -872,6 +936,7 @@ export class GameEngine {
       if (t > minT && t < best.t) best = { t, soldier: null, head: false, crossbow: c }
     }
     for (const c of this.colliders) {
+      if (c.movementOnly) continue
       const hit = ray.intersectBox(c.box, this.tmp3)
       if (hit) {
         const t = hit.distanceTo(ray.origin)
@@ -1018,21 +1083,74 @@ export class GameEngine {
 
   // ---------- NPCs ----------
 
-  private navGoal(from: THREE.Vector3, to: THREE.Vector3, out: THREE.Vector3) {
+  private navGoal(soldier: Soldier, from: THREE.Vector3, to: THREE.Vector3, out: THREE.Vector3) {
+    // 1. If currently inside a fort and destination is outside, exit through that fort's gate first
     for (const cz of [BLUE_Z, RED_Z]) {
       const inFrom = isInsideFort(from.x, from.z, cz)
       const inTo = isInsideFort(to.x, to.z, cz)
-      if (inFrom === inTo) continue
+      if (!inFrom || inTo) continue
       const s = cz > 0 ? -1 : 1
       const frontZ = cz + s * FORT_HALF
       const inLane = Math.abs(from.x) < GATE_HALF - 0.9 && Math.abs(from.z - frontZ) < 6
-      if (inFrom) return inLane ? out.set(0, 0, frontZ + s * 6) : out.set(0, 0, frontZ - s * 5)
+      return inLane ? out.set(0, 0, frontZ + s * 6) : out.set(0, 0, frontZ - s * 5)
+    }
+
+    // 2. If the current map has a river/gorge crossing with bridges, route cleanly across a bridge
+    const crossing = this.world.crossing
+    if (crossing) {
+      const band = crossing.halfBandZ
+      const exitZ = band + 3
+      const pickBridgeX = () => {
+        const prefX = Math.abs(from.x) < 6 ? soldier.laneX : from.x
+        let bestBx = crossing.bridgeXs[0]
+        let bestDist = Math.abs(prefX - bestBx)
+        for (let i = 1; i < crossing.bridgeXs.length; i++) {
+          const d = Math.abs(prefX - crossing.bridgeXs[i])
+          if (d < bestDist) {
+            bestDist = d
+            bestBx = crossing.bridgeXs[i]
+          }
+        }
+        return bestBx
+      }
+
+      if (Math.abs(from.z) <= band) {
+        // Currently on a bridge
+        const bx = pickBridgeX()
+        if (to.z < -band) return out.set(bx, 0, -exitZ)
+        if (to.z > band) return out.set(bx, 0, exitZ)
+        if (Math.abs(to.x - bx) <= crossing.bridgeHalfW + 1.2) {
+          return out.set(clamp(to.x, bx - crossing.bridgeHalfW, bx + crossing.bridgeHalfW), 0, to.z)
+        }
+        return out.set(bx, 0, from.z >= 0 ? exitZ : -exitZ)
+      }
+
+      if (from.z > band && to.z < band) {
+        const bx = pickBridgeX()
+        return Math.abs(from.x - bx) > crossing.bridgeHalfW ? out.set(bx, 0, exitZ) : out.set(bx, 0, -exitZ)
+      }
+
+      if (from.z < -band && to.z > -band) {
+        const bx = pickBridgeX()
+        return Math.abs(from.x - bx) > crossing.bridgeHalfW ? out.set(bx, 0, -exitZ) : out.set(bx, 0, exitZ)
+      }
+    }
+
+    // 3. Same side of any crossing: if destination is inside a fort, enter through its front gate
+    for (const cz of [BLUE_Z, RED_Z]) {
+      const inFrom = isInsideFort(from.x, from.z, cz)
+      const inTo = isInsideFort(to.x, to.z, cz)
+      if (inFrom || !inTo) continue
+      const s = cz > 0 ? -1 : 1
+      const frontZ = cz + s * FORT_HALF
+      const inLane = Math.abs(from.x) < GATE_HALF - 0.9 && Math.abs(from.z - frontZ) < 6
       if (inLane) return out.set(0, 0, frontZ - s * 6)
       if ((from.z - frontZ) * s < 1.5) {
         return out.set(Math.sign(from.x || 1) * (FORT_HALF + 7), 0, frontZ + s * 7)
       }
       return out.set(0, 0, frontZ + s * 5)
     }
+
     return out.copy(to)
   }
 
@@ -1043,7 +1161,7 @@ export class GameEngine {
     dir.divideScalar(len)
     const ray = new THREE.Ray(a, dir)
     for (const c of this.colliders) {
-      if (c.low) continue
+      if (c.low || c.movementOnly) continue
       const hit = ray.intersectBox(c.box, this.tmp3)
       if (hit && hit.distanceTo(a) < len - 0.4) return false
     }
@@ -1131,7 +1249,7 @@ export class GameEngine {
       if (s.swingTime > 0.5) s.swingTime = -1
     }
 
-    const nav = this.navGoal(s.pos, goal, this.tmp2.set(0, 0, 0)).clone()
+    const nav = this.navGoal(s, s.pos, goal, this.tmp2.set(0, 0, 0)).clone()
     const finalLeg = nav.equals(goal)
     let dx = nav.x - s.pos.x
     let dz = nav.z - s.pos.z
@@ -1252,7 +1370,9 @@ export class GameEngine {
     const alive = this.soldiers.filter((s) => s.team === 'blue' && !s.isPlayer && s.alive).length
     const count = Math.min(BLUE_STATS.reinforce, BLUE_STATS.max - alive)
     for (let i = 0; i < count; i++) {
-      this.createSoldier('blue', new THREE.Vector3((i === 0 ? -1 : 1) * 4, 0, BLUE_Z - 6))
+      const side = i === 0 ? -1 : 1
+      const ally = this.createSoldier('blue', new THREE.Vector3(side * 4, 0, BLUE_Z - 6))
+      ally.laneX = side * (3 + Math.random() * 4)
     }
     if (count > 0) this.toast(`${count} blue reinforcements have arrived`, 'good')
   }
@@ -1395,6 +1515,7 @@ export class GameEngine {
         return true
       }
       for (const c of this.colliders) {
+        if (c.movementOnly) continue
         if (c.box.containsPoint(p.pos)) {
           p.stuck = true
           p.life = Math.min(p.life, 4)
@@ -1574,27 +1695,27 @@ export class GameEngine {
     const pivot = this.tmp.set(p.pos.x, p.pos.y + 1.7, p.pos.z)
     const cp = Math.cos(this.camPitch)
     const dir = this.tmp2.set(Math.sin(this.camYaw) * cp, Math.sin(this.camPitch), Math.cos(this.camYaw) * cp)
-    const right = new THREE.Vector3(-Math.cos(this.camYaw), 0, Math.sin(this.camYaw))
-    const shoulder = pivot.clone().addScaledVector(right, 0.85).addScaledVector(UP, 0.25)
+    this.camRight.set(-Math.cos(this.camYaw), 0, Math.sin(this.camYaw))
+    this.camShoulder.copy(pivot).addScaledVector(this.camRight, 0.85).addScaledVector(UP, 0.25)
     let dist = this.player.blocking ? 3.6 : 4.4
-    const back = dir.clone().negate()
-    const ray = new THREE.Ray(shoulder, back)
+    this.camBack.copy(dir).negate()
+    this.ray.set(this.camShoulder, this.camBack)
     for (const c of this.colliders) {
-      if (c.low) continue
-      const hit = ray.intersectBox(c.box, this.tmp3)
+      if (c.low || c.movementOnly) continue
+      const hit = this.ray.intersectBox(c.box, this.tmp3)
       if (hit) {
-        const t = hit.distanceTo(shoulder)
+        const t = hit.distanceTo(this.camShoulder)
         if (t < dist) dist = Math.max(0.6, t - 0.3)
       }
     }
-    const camPos = shoulder.clone().addScaledVector(back, dist)
-    camPos.y = Math.max(camPos.y, 0.4)
-    this.camera.position.copy(camPos)
-    this.camera.lookAt(camPos.clone().add(dir))
+    this.camPos.copy(this.camShoulder).addScaledVector(this.camBack, dist)
+    this.camPos.y = Math.max(this.camPos.y, 0.4)
+    this.camera.position.copy(this.camPos)
+    this.camLook.copy(this.camPos).add(dir)
+    this.camera.lookAt(this.camLook)
 
     this.sun.position.copy(p.pos).add(this.sunOffset)
     this.sun.target.position.copy(p.pos)
-    const sky = this.scene.getObjectByName('sky')
-    if (sky) sky.position.copy(camPos)
+    this.world.sky.position.copy(this.camPos)
   }
 }

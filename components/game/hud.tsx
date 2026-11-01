@@ -2,7 +2,7 @@ import { BriefcaseMedical, Castle, Crosshair, Flag, Heart, Shield, Skull, Sword,
 import type { HudSnapshot } from '@/lib/game/engine'
 import { cn } from '@/lib/utils'
 
-const panel = 'rounded-xl border border-white/10 bg-[#0d1422]/75 backdrop-blur-sm shadow-lg'
+const panel = 'rounded-xl border border-white/10 bg-[#0d1422]/85 shadow-lg'
 
 export function Hud({ s }: { s: HudSnapshot }) {
   return (
@@ -14,7 +14,7 @@ export function Hud({ s }: { s: HudSnapshot }) {
         />
       )}
       {s.hp > 0 && s.hp < 30 && (
-        <div className="absolute inset-0 animate-pulse shadow-[inset_0_0_160px_30px_rgba(160,10,10,0.45)]" />
+        <div className="absolute inset-0 shadow-[inset_0_0_160px_30px_rgba(160,10,10,0.45)]" />
       )}
 
       <ObjectiveBar s={s} />
@@ -25,12 +25,12 @@ export function Hud({ s }: { s: HudSnapshot }) {
       <WeaponBar s={s} />
 
       {s.insideRedFort && (
-        <div className="absolute left-1/2 top-28 -translate-x-1/2 rounded-full border border-emerald-400/30 bg-emerald-950/70 px-4 py-1.5 text-xs font-medium text-emerald-200">
+        <div className="absolute left-1/2 top-28 -translate-x-1/2 rounded-lg border border-emerald-400/30 bg-emerald-950/85 px-4 py-1.5 text-xs font-medium text-emerald-200">
           {"Inside the red walls — crossbows can't target you"}
         </div>
       )}
       {s.inResupply && (
-        <div className="absolute left-1/2 top-28 -translate-x-1/2 rounded-full border border-sky-400/30 bg-sky-950/70 px-4 py-1.5 text-xs font-medium text-sky-200">
+        <div className="absolute left-1/2 top-28 -translate-x-1/2 rounded-lg border border-sky-400/30 bg-sky-950/85 px-4 py-1.5 text-xs font-medium text-sky-200">
           Resupply ring — restocking ammo, med kits and health
         </div>
       )}
@@ -58,7 +58,11 @@ function ObjectiveBar({ s }: { s: HudSnapshot }) {
         <span className="flex items-center gap-1.5 text-xs font-semibold text-sky-300">
           <Flag className="size-3.5" aria-hidden="true" /> Blue
         </span>
-        <span className="font-display text-sm font-semibold tracking-wide text-amber-200">Conquest</span>
+        <span className="truncate text-xs font-medium text-amber-200">
+          <span className="font-display text-sm font-semibold tracking-wide">Conquest</span>
+          <span className="mx-1.5 text-white/40" aria-hidden="true">·</span>
+          <span className="text-white/80">{s.mapName}</span>
+        </span>
         <span className="flex items-center gap-1.5 text-xs font-semibold text-red-300">
           Red <Flag className="size-3.5" aria-hidden="true" />
         </span>

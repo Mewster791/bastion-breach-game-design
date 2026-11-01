@@ -37,8 +37,10 @@ export function BastionGame() {
       {snapshot && engine && (
         <>
           {snapshot.state === 'playing' && <Hud s={snapshot} />}
-          {snapshot.state === 'ready' && <StartOverlay onStart={() => engine.start()} />}
-          {snapshot.state === 'paused' && <PausedOverlay onResume={() => engine.start()} />}
+          {snapshot.state === 'ready' && <StartOverlay s={snapshot} onStart={() => engine.start()} />}
+          {snapshot.state === 'paused' && (
+            <PausedOverlay s={snapshot} onResume={() => engine.start()} onRestart={() => engine.restart()} />
+          )}
           {(snapshot.state === 'victory' || snapshot.state === 'defeat') && (
             <EndOverlay s={snapshot} onRestart={() => engine.restart()} />
           )}
