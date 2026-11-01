@@ -5,6 +5,9 @@ name: Nativize Build
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   android:
     name: Android (.apk + .aab)
