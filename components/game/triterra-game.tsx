@@ -1,10 +1,10 @@
 'use client'
 
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { CustomMapLayout } from '@/lib/game/custom-map'
 import { GameEngine, type HudSnapshot } from '@/lib/game/engine'
 import { MusicManager, type MusicTrackId } from '@/lib/game/music'
-import { Hud } from './hud'
+import { Hud, type HudActions } from './hud'
 import { MapCreatorModal } from './map-creator'
 import { EndOverlay, PausedOverlay, StartOverlay } from './overlays'
 
@@ -24,9 +24,14 @@ export function TriterraGame() {
     const engineInstance = new GameEngine(containerRef.current, {
       onToggleMute: () => musicInstance.toggleMute(),
     })
+    const onPageShow = (e: PageTransitionEvent) => {
+      if (e.persisted) setCreatorOpen(false)
+    }
+    window.addEventListener('pageshow', onPageShow)
     setMusic(musicInstance)
     setEngine(engineInstance)
     return () => {
+      window.removeEventListener('pageshow', onPageShow)
       engineInstance.dispose()
       musicInstance.dispose()
       setEngine(null)
@@ -59,6 +64,21 @@ export function TriterraGame() {
     music.setTrack(targetTrack)
   }, [music, creatorOpen, gameState, cityCaptured])
 
+  const hudActions = useMemo<HudActions | null>(() => {
+    if (!engine) return null
+    return {
+      onPause: () => engine.pause(),
+      onSelectWeapon: (w) => engine.triggerWeaponSelect(w),
+      onUseMedkit: () => engine.triggerMedkit(),
+      onMoveVector: (r, f) => engine.triggerMoveVector(r, f),
+      onPrimaryAction: (active) => engine.triggerPrimaryAction(active),
+      onSecondaryAction: (active) => engine.triggerSecondaryAction(active),
+      onJump: () => engine.triggerJump(),
+      onSprintAction: (active) => engine.triggerSprintAction(active),
+      onEnableTouch: () => engine.enableTouchMode(),
+    }
+  }, [engine])
+
   const handleStart = () => {
     if (!engine) return
     const track: MusicTrackId = snapshot?.cityCaptured ? 'assault' : 'march'
@@ -79,16 +99,16 @@ export function TriterraGame() {
     setCreatorOpen(true)
   }
 
-  const handleSaveCustomMap = (layout: CustomMapLayout, playImmediately: boolean) => {
+  const handleActivateSessionMap = (layout: CustomMapLayout, playImmediately: boolean) => {
     if (!engine) return
     music?.unlockAndPlay(playImmediately ? 'march' : 'architect')
     setCreatorOpen(false)
-    engine.saveCustomMap(layout, playImmediately)
+    engine.setSessionCustomMap(layout, playImmediately)
   }
 
-  const handleRemoveCustomMap = () => {
+  const handleClearSessionMap = () => {
     if (!engine) return
-    engine.removeCustomMap()
+    engine.clearSessionCustomMap()
   }
 
   const handleToggleMute = () => {
@@ -101,10 +121,10 @@ export function TriterraGame() {
       {!snapshot && (
         <div className="absolute inset-0 flex items-center justify-center text-sm text-white/70">Raising the forts…</div>
       )}
-      {snapshot && engine && (
+      {snapshot && engine && hudActions && (
         <>
           {snapshot.state === 'playing' && !creatorOpen && (
-            <Hud s={snapshot} muted={muted} onToggleMute={handleToggleMute} />
+            <Hud s={snapshot} muted={muted} onToggleMute={handleToggleMute} actions={hudActions} />
           )}
           {snapshot.state === 'ready' && !creatorOpen && (
             <StartOverlay
@@ -137,9 +157,9 @@ export function TriterraGame() {
           {creatorOpen && (
             <MapCreatorModal
               initialLayout={engine.getCustomMap()}
-              hasSavedCustomMap={snapshot.hasCustomMap}
-              onSaveToRotation={handleSaveCustomMap}
-              onRemoveCustomMap={handleRemoveCustomMap}
+              hasSessionCustomMap={snapshot.hasCustomMap}
+              onActivateForSession={handleActivateSessionMap}
+              onClearSessionMap={handleClearSessionMap}
               onClose={() => setCreatorOpen(false)}
             />
           )}

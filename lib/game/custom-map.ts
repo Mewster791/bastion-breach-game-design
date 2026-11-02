@@ -6,8 +6,17 @@ export const GRID_ROWS = 25
 export const CELL_SIZE_X = 8
 export const CELL_SIZE_Z = 15
 export const REQUIRED_CROSSBOWS = 8
+export const MAX_CUSTOM_UNITS_PER_TEAM = 24
 
-export type CellKind = 'empty' | 'wall' | 'blue_spawn' | 'town_square' | 'crossbow'
+export type CellKind =
+  | 'empty'
+  | 'wall'
+  | 'barricade'
+  | 'blue_spawn'
+  | 'town_square'
+  | 'crossbow'
+  | 'blue_unit'
+  | 'red_unit'
 
 export interface GridCoord {
   col: number
@@ -17,6 +26,10 @@ export interface GridCoord {
 export interface CrossbowPlacement extends GridCoord {
   dirX: number
   dirZ: number
+}
+
+export interface UnitPlacement extends GridCoord {
+  team: 'blue' | 'red'
 }
 
 export interface CustomMapLayout {
@@ -30,9 +43,11 @@ export interface CustomMapLayout {
   townSquare: GridCoord
   crossbows: CrossbowPlacement[]
   walls: GridCoord[]
+  barricades: GridCoord[]
+  units: UnitPlacement[]
 }
 
-const STORAGE_KEY = 'triterra_siege_custom_map_v1'
+const LEGACY_STORAGE_KEY = 'triterra_siege_custom_map_v1'
 
 export function gridToWorld(col: number, row: number): { x: number; z: number } {
   return {
@@ -46,7 +61,6 @@ export function gridToWorld(col: number, row: number): { x: number; z: number } 
  * Ensures crossbows mounted on or near fort walls strictly face outward and never inward.
  */
 export function computeOutwardCrossbowDir(col: number, row: number): { dirX: number; dirZ: number } {
-  // Exact canonical angles for Red Fort wall & corner tower cells
   if (row === 3 && col === 4) return normalize2D(-0.65, 1)
   if (row === 3 && col === 10) return normalize2D(0.65, 1)
   if (row === 3 && col > 4 && col < 10) {
@@ -107,7 +121,6 @@ export function crossbowCellToWorldDef(c: CrossbowPlacement): [number, number, n
     }
   }
 
-  // Re-verify outward orientation relative to Red Fort center (0, RED_Z)
   const outDx = x - 0
   const outDz = z - RED_Z
   const dot = c.dirX * outDx + c.dirZ * outDz
@@ -184,16 +197,15 @@ export function isTownSquareBetweenSpawns(townSquare: GridCoord, blueSpawn: Grid
   return { ok: true }
 }
 
-export function isValidWallCell(col: number, row: number, layout: CustomMapLayout): { ok: boolean; reason?: string } {
+export function isValidTerrainCell(col: number, row: number, layout: CustomMapLayout): { ok: boolean; reason?: string } {
   if (col < 0 || col >= GRID_COLS || row < 0 || row >= GRID_ROWS) {
     return { ok: false, reason: 'Cell is outside the battlefield grid.' }
   }
-  // Keep fort courtyards, gates, and spawn points passable
   if (col >= 4 && col <= 10 && row >= 0 && row <= 3) {
-    return { ok: false, reason: 'Cannot overwrite Red Fort perimeter or courtyard with custom wall blocks.' }
+    return { ok: false, reason: 'Cannot overwrite Red Fort perimeter or courtyard with custom terrain.' }
   }
   if (col >= 4 && col <= 10 && row >= 21 && row <= 24) {
-    return { ok: false, reason: 'Cannot overwrite Blue Fort perimeter or courtyard with custom wall blocks.' }
+    return { ok: false, reason: 'Cannot overwrite Blue Fort perimeter or courtyard with custom terrain.' }
   }
   if (col === 7 && (row === 4 || row === 20)) {
     return { ok: false, reason: 'Keep Fort gate approaches clear so armies can march out.' }
@@ -206,6 +218,51 @@ export function isValidWallCell(col: number, row: number, layout: CustomMapLayou
   }
   if (layout.crossbows.some((c) => c.col === col && c.row === row)) {
     return { ok: false, reason: 'Cell is occupied by an Outward-Facing Crossbow.' }
+  }
+  return { ok: true }
+}
+
+export function isValidWallCell(col: number, row: number, layout: CustomMapLayout): { ok: boolean; reason?: string } {
+  return isValidTerrainCell(col, row, layout)
+}
+
+export function isValidUnitCell(
+  col: number,
+  row: number,
+  team: 'blue' | 'red',
+  layout: CustomMapLayout,
+): { ok: boolean; reason?: string } {
+  if (col < 0 || col >= GRID_COLS || row < 0 || row >= GRID_ROWS) {
+    return { ok: false, reason: 'Cell is outside the battlefield grid.' }
+  }
+  // Prevent placing units inside solid fort wall cells
+  const isRedFortWall =
+    ((row === 0 || row === 3) && col >= 4 && col <= 10 && !(row === 3 && col === 7)) ||
+    ((col === 4 || col === 10) && row >= 0 && row <= 3)
+  const isBlueFortWall =
+    ((row === 21 || row === 24) && col >= 4 && col <= 10 && !(row === 21 && col === 7)) ||
+    ((col === 4 || col === 10) && row >= 21 && row <= 24)
+  if (isRedFortWall || isBlueFortWall) {
+    return { ok: false, reason: 'Cannot spawn ground units inside solid fort perimeter walls.' }
+  }
+  if (team === 'blue' && row <= 4) {
+    return { ok: false, reason: 'Blue vanguard units must deploy south of the Red Fort glacis (rows 6–25).' }
+  }
+  if (team === 'red' && row >= 20) {
+    return { ok: false, reason: 'Red garrison units must deploy north of the Blue staging zone (rows 1–20).' }
+  }
+  if (layout.walls.some((w) => w.col === col && w.row === row)) {
+    return { ok: false, reason: 'Cell is occupied by a Wall.' }
+  }
+  if (layout.barricades.some((b) => b.col === col && b.row === row)) {
+    return { ok: false, reason: 'Cell is occupied by a Barricade.' }
+  }
+  if (layout.crossbows.some((c) => c.col === col && c.row === row)) {
+    return { ok: false, reason: 'Cell is occupied by a Crossbow.' }
+  }
+  const teamCount = layout.units.filter((u) => u.team === team && !(u.col === col && u.row === row)).length
+  if (teamCount >= MAX_CUSTOM_UNITS_PER_TEAM) {
+    return { ok: false, reason: `Maximum of ${MAX_CUSTOM_UNITS_PER_TEAM} custom ${team} units reached.` }
   }
   return { ok: true }
 }
@@ -227,7 +284,6 @@ export function createStarterCustomMap(): CustomMapLayout {
     ...computeOutwardCrossbowDir(col, row),
   }))
 
-  // Balanced central city street walls leaving 3 clear north-south avenues
   const walls: GridCoord[] = [
     { col: 5, row: 10 },
     { col: 9, row: 10 },
@@ -241,6 +297,22 @@ export function createStarterCustomMap(): CustomMapLayout {
     { col: 9, row: 14 },
   ]
 
+  const barricades: GridCoord[] = [
+    { col: 6, row: 8 },
+    { col: 8, row: 8 },
+    { col: 6, row: 16 },
+    { col: 8, row: 16 },
+  ]
+
+  const units: UnitPlacement[] = [
+    { col: 6, row: 18, team: 'blue' },
+    { col: 7, row: 18, team: 'blue' },
+    { col: 8, row: 18, team: 'blue' },
+    { col: 6, row: 11, team: 'red' },
+    { col: 8, row: 11, team: 'red' },
+    { col: 7, row: 6, team: 'red' },
+  ]
+
   return {
     version: 1,
     name: 'Citadel Crossroads',
@@ -252,6 +324,8 @@ export function createStarterCustomMap(): CustomMapLayout {
     townSquare: { col: 7, row: 12 },
     crossbows,
     walls,
+    barricades,
+    units,
   }
 }
 
@@ -285,7 +359,6 @@ export function validateCustomMap(layout: CustomMapLayout): { valid: boolean; er
     const cOk = isValidCrossbowCell(c.col, c.row)
     if (!cOk.ok && cOk.reason) errors.push(cOk.reason)
 
-    // Verify outward direction vector points away from Red Fort center
     const { x, z } = gridToWorld(c.col, c.row)
     const dot = c.dirX * x + c.dirZ * (z - RED_Z)
     if (dot < -0.05) {
@@ -312,6 +385,8 @@ export function serializeCustomMap(layout: CustomMapLayout): string {
       ...computeOutwardCrossbowDir(c.col, c.row),
     })),
     walls: layout.walls.map((w) => ({ col: w.col, row: w.row })),
+    barricades: (layout.barricades ?? []).map((b) => ({ col: b.col, row: b.row })),
+    units: (layout.units ?? []).map((u) => ({ col: u.col, row: u.row, team: u.team })),
   }
   return JSON.stringify(normalized, null, 2)
 }
@@ -347,25 +422,33 @@ export function parseCustomMap(jsonText: string): { layout: CustomMapLayout | nu
       crossbows: raw.crossbows.map((c) => {
         const col = Math.round(Number(c.col))
         const row = Math.round(Number(c.row))
-        const outward = computeOutwardCrossbowDir(col, row)
         return {
           col,
           row,
-          dirX: typeof c.dirX === 'number' ? c.dirX : outward.dirX,
-          dirZ: typeof c.dirZ === 'number' ? c.dirZ : outward.dirZ,
+          ...computeOutwardCrossbowDir(col, row),
         }
       }),
       walls: raw.walls
         .filter((w) => w && typeof w.col === 'number' && typeof w.row === 'number')
         .map((w) => ({ col: Math.round(w.col), row: Math.round(w.row) })),
+      barricades: Array.isArray(raw.barricades)
+        .valueOf()
+        ? (raw.barricades ?? [])
+            .filter((b) => b && typeof b.col === 'number' && typeof b.row === 'number')
+            .map((b) => ({ col: Math.round(b.col), row: Math.round(b.row) }))
+        : [],
+      units: Array.isArray(raw.units)
+        ? raw.units
+            .filter(
+              (u) =>
+                u &&
+                typeof u.col === 'number' &&
+                typeof u.row === 'number' &&
+                (u.team === 'blue' || u.team === 'red'),
+            )
+            .map((u) => ({ col: Math.round(u.col), row: Math.round(u.row), team: u.team }))
+        : [],
     }
-
-    // Enforce outward crossbow directions
-    candidate.crossbows = candidate.crossbows.map((c) => ({
-      col: c.col,
-      row: c.row,
-      ...computeOutwardCrossbowDir(c.col, c.row),
-    }))
 
     const check = validateCustomMap(candidate)
     if (!check.valid) {
@@ -377,42 +460,22 @@ export function parseCustomMap(jsonText: string): { layout: CustomMapLayout | nu
   }
 }
 
-export function loadSavedCustomMap(): CustomMapLayout | null {
-  if (typeof window === 'undefined') return null
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY)
-    if (!raw) return null
-    const parsed = parseCustomMap(raw)
-    return parsed.layout
-  } catch {
-    return null
-  }
-}
-
-export function saveCustomMapToStorage(layout: CustomMapLayout): string {
-  const json = serializeCustomMap(layout)
-  if (typeof window !== 'undefined') {
-    try {
-      window.localStorage.setItem(STORAGE_KEY, json)
-    } catch {
-      // Ignore storage quota errors
-    }
-  }
-  return json
-}
-
-export function clearSavedCustomMap(): void {
+/**
+ * Ensures no custom map data is ever persisted in browser storage across reloads.
+ * Custom maps live strictly in memory for the current tab session unless copied as JSON by the player.
+ */
+export function purgeLegacySavedCustomMap(): void {
   if (typeof window === 'undefined') return
   try {
-    window.localStorage.removeItem(STORAGE_KEY)
+    window.localStorage.removeItem(LEGACY_STORAGE_KEY)
+    window.sessionStorage.removeItem(LEGACY_STORAGE_KEY)
   } catch {
-    // Ignore
+    // Ignore storage access errors
   }
 }
 
 export function blueSpawnWorldPos(layout: CustomMapLayout): { x: number; z: number } {
   const { x, z } = gridToWorld(layout.blueSpawn.col, layout.blueSpawn.row)
-  // Keep inside Blue Fort courtyard if placed in row 22
   if (layout.blueSpawn.row === 22 && Math.abs(x) <= 18) {
     return { x, z: BLUE_Z }
   }

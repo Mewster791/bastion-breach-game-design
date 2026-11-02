@@ -15,13 +15,16 @@ import {
   Crosshair,
   Eraser,
   Flag,
+  Layers,
   Play,
   RotateCcw,
   Save,
   Shield,
+  Skull,
   Trash2,
   TriangleAlert,
   Upload,
+  Users,
   X,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -30,6 +33,7 @@ import {
   CELL_SIZE_Z,
   GRID_COLS,
   GRID_ROWS,
+  MAX_CUSTOM_UNITS_PER_TEAM,
   REQUIRED_CROSSBOWS,
   computeOutwardCrossbowDir,
   createStarterCustomMap,
@@ -37,7 +41,8 @@ import {
   isInsideRedCourtyardInterior,
   isValidBlueSpawnCell,
   isValidCrossbowCell,
-  isValidWallCell,
+  isValidTerrainCell,
+  isValidUnitCell,
   parseCustomMap,
   serializeCustomMap,
   validateCustomMap,
@@ -49,15 +54,14 @@ import { cn } from '@/lib/utils'
 
 interface MapCreatorProps {
   initialLayout: CustomMapLayout | null
-  hasSavedCustomMap: boolean
-  onSaveToRotation: (layout: CustomMapLayout, playImmediately: boolean) => void
-  onRemoveCustomMap: () => void
+  hasSessionCustomMap: boolean
+  onActivateForSession: (layout: CustomMapLayout, playImmediately: boolean) => void
+  onClearSessionMap: () => void
   onClose: () => void
 }
 
 function OutwardArrowIcon({ dirX, dirZ }: { dirX: number; dirZ: number }) {
   const angle = Math.atan2(dirZ, dirX) * (180 / Math.PI)
-  // Map 2D world direction (+X = East/Right, +Z = South/Down on grid) to 8-way arrow icon
   if (angle >= -22.5 && angle < 22.5) return <ArrowRight className="size-3.5" aria-hidden="true" />
   if (angle >= 22.5 && angle < 67.5) return <ArrowDownRight className="size-3.5" aria-hidden="true" />
   if (angle >= 67.5 && angle < 112.5) return <ArrowDown className="size-3.5" aria-hidden="true" />
@@ -70,9 +74,9 @@ function OutwardArrowIcon({ dirX, dirZ }: { dirX: number; dirZ: number }) {
 
 export function MapCreatorModal({
   initialLayout,
-  hasSavedCustomMap,
-  onSaveToRotation,
-  onRemoveCustomMap,
+  hasSessionCustomMap,
+  onActivateForSession,
+  onClearSessionMap,
   onClose,
 }: MapCreatorProps) {
   const [layout, setLayout] = useState<CustomMapLayout>(() => initialLayout ?? createStarterCustomMap())
@@ -104,6 +108,20 @@ export function MapCreatorModal({
     return set
   }, [layout.walls])
 
+  const barricadeLookup = useMemo(() => {
+    const set = new Set<string>()
+    for (const b of layout.barricades ?? []) set.add(`${b.col},${b.row}`)
+    return set
+  }, [layout.barricades])
+
+  const unitLookup = useMemo(() => {
+    const map = new Map<string, 'blue' | 'red'>()
+    for (const u of layout.units ?? []) {
+      map.set(`${u.col},${u.row}`, u.team)
+    }
+    return map
+  }, [layout.units])
+
   const crossbowLookup = useMemo(() => {
     const map = new Map<string, { dirX: number; dirZ: number; index: number }>()
     layout.crossbows.forEach((c, index) => {
@@ -112,17 +130,28 @@ export function MapCreatorModal({
     return map
   }, [layout.crossbows])
 
+  const blueUnitCount = useMemo(
+    () => (layout.units ?? []).filter((u) => u.team === 'blue').length,
+    [layout.units],
+  )
+  const redUnitCount = useMemo(
+    () => (layout.units ?? []).filter((u) => u.team === 'red').length,
+    [layout.units],
+  )
+
   const applyCellAction = (col: number, row: number, isDrag = false) => {
     const key = `${col},${row}`
     setJsonEditedManually(false)
 
     if (tool === 'empty') {
-      const hadWall = wallLookup.has(key)
-      const hadCrossbow = crossbowLookup.has(key)
-      if (!hadWall && !hadCrossbow) return
+      const hadAny =
+        wallLookup.has(key) || barricadeLookup.has(key) || unitLookup.has(key) || crossbowLookup.has(key)
+      if (!hadAny) return
       setLayout((prev) => ({
         ...prev,
         walls: prev.walls.filter((w) => !(w.col === col && w.row === row)),
+        barricades: (prev.barricades ?? []).filter((b) => !(b.col === col && b.row === row)),
+        units: (prev.units ?? []).filter((u) => !(u.col === col && u.row === row)),
         crossbows: prev.crossbows.filter((c) => !(c.col === col && c.row === row)),
       }))
       setRuleFeedback({ text: 'Cleared grid cell.', tone: 'info' })
@@ -140,7 +169,7 @@ export function MapCreatorModal({
         }
         return
       }
-      const check = isValidWallCell(col, row, layout)
+      const check = isValidTerrainCell(col, row, layout)
       if (!check.ok) {
         if (!isDrag) setRuleFeedback({ text: check.reason ?? 'Invalid wall cell.', tone: 'warn' })
         return
@@ -148,12 +177,66 @@ export function MapCreatorModal({
       setLayout((prev) => ({
         ...prev,
         walls: [...prev.walls, { col, row }],
+        barricades: (prev.barricades ?? []).filter((b) => !(b.col === col && b.row === row)),
+        units: (prev.units ?? []).filter((u) => !(u.col === col && u.row === row)),
       }))
       setRuleFeedback({ text: `Placed fortified wall at (${col + 1}, ${row + 1}).`, tone: 'good' })
       return
     }
 
+    if (tool === 'barricade') {
+      if (barricadeLookup.has(key)) {
+        if (!isDrag) {
+          setLayout((prev) => ({
+            ...prev,
+            barricades: (prev.barricades ?? []).filter((b) => !(b.col === col && b.row === row)),
+          }))
+          setRuleFeedback({ text: 'Removed terrain cover.', tone: 'info' })
+        }
+        return
+      }
+      const check = isValidTerrainCell(col, row, layout)
+      if (!check.ok) {
+        if (!isDrag) setRuleFeedback({ text: check.reason ?? 'Invalid terrain cell.', tone: 'warn' })
+        return
+      }
+      setLayout((prev) => ({
+        ...prev,
+        barricades: [...(prev.barricades ?? []), { col, row }],
+        walls: prev.walls.filter((w) => !(w.col === col && w.row === row)),
+        units: (prev.units ?? []).filter((u) => !(u.col === col && u.row === row)),
+      }))
+      setRuleFeedback({ text: `Placed tactical terrain cover at (${col + 1}, ${row + 1}).`, tone: 'good' })
+      return
+    }
+
     if (isDrag) return
+
+    if (tool === 'blue_unit' || tool === 'red_unit') {
+      const team = tool === 'blue_unit' ? 'blue' : 'red'
+      if (unitLookup.get(key) === team) {
+        setLayout((prev) => ({
+          ...prev,
+          units: (prev.units ?? []).filter((u) => !(u.col === col && u.row === row)),
+        }))
+        setRuleFeedback({ text: `Removed ${team} unit at (${col + 1}, ${row + 1}).`, tone: 'info' })
+        return
+      }
+      const check = isValidUnitCell(col, row, team, layout)
+      if (!check.ok) {
+        setRuleFeedback({ text: check.reason ?? 'Invalid unit cell.', tone: 'warn' })
+        return
+      }
+      setLayout((prev) => ({
+        ...prev,
+        units: [...(prev.units ?? []).filter((u) => !(u.col === col && u.row === row)), { col, row, team }],
+      }))
+      setRuleFeedback({
+        text: `Deployed ${team === 'blue' ? 'Blue vanguard soldier' : 'Red garrison defender'} at (${col + 1}, ${row + 1}).`,
+        tone: 'good',
+      })
+      return
+    }
 
     if (tool === 'blue_spawn') {
       const check = isValidBlueSpawnCell(col, row)
@@ -174,6 +257,9 @@ export function MapCreatorModal({
           townSquare: clampedTown,
           walls: prev.walls.filter(
             (w) => !(w.col === col && w.row === row) && !(w.col === clampedTown.col && w.row === clampedTown.row),
+          ),
+          barricades: (prev.barricades ?? []).filter(
+            (b) => !(b.col === col && b.row === row) && !(b.col === clampedTown.col && b.row === clampedTown.row),
           ),
         }
       })
@@ -201,8 +287,12 @@ export function MapCreatorModal({
         ...prev,
         townSquare: { col, row },
         walls: prev.walls.filter((w) => !(w.col === col && w.row === row)),
+        barricades: (prev.barricades ?? []).filter((b) => !(b.col === col && b.row === row)),
       }))
-      setRuleFeedback({ text: `Placed Town Square Circle at (${col + 1}, ${row + 1}) directly between spawns.`, tone: 'good' })
+      setRuleFeedback({
+        text: `Placed Town Square Circle at (${col + 1}, ${row + 1}) directly between spawns.`,
+        tone: 'good',
+      })
       return
     }
 
@@ -232,6 +322,8 @@ export function MapCreatorModal({
         ...prev,
         crossbows: [...prev.crossbows, { col, row, ...outward }],
         walls: prev.walls.filter((w) => !(w.col === col && w.row === row)),
+        barricades: (prev.barricades ?? []).filter((b) => !(b.col === col && b.row === row)),
+        units: (prev.units ?? []).filter((u) => !(u.col === col && u.row === row)),
       }))
       setRuleFeedback({
         text: `Placed outward-facing crossbow (${layout.crossbows.length + 1}/${REQUIRED_CROSSBOWS}) oriented away from the Red Fort walls.`,
@@ -247,6 +339,10 @@ export function MapCreatorModal({
       ...prev,
       crossbows: starter.crossbows,
       walls: prev.walls.filter((w) => !starter.crossbows.some((c) => c.col === w.col && c.row === w.row)),
+      barricades: (prev.barricades ?? []).filter(
+        (b) => !starter.crossbows.some((c) => c.col === b.col && c.row === b.row),
+      ),
+      units: (prev.units ?? []).filter((u) => !starter.crossbows.some((c) => c.col === u.col && c.row === u.row)),
     }))
     setRuleFeedback({
       text: 'Placed all 8 outward-facing crossbows along the Red Fort walls and towers.',
@@ -258,7 +354,7 @@ export function MapCreatorModal({
     const starter = createStarterCustomMap()
     setJsonEditedManually(false)
     setLayout(starter)
-    setRuleFeedback({ text: 'Reset grid to balanced starter siege layout.', tone: 'info' })
+    setRuleFeedback({ text: 'Reset grid to balanced starter terrain & unit layout.', tone: 'info' })
   }
 
   const handleCopyJson = async () => {
@@ -279,16 +375,56 @@ export function MapCreatorModal({
     }
     setLayout(result.layout)
     setJsonEditedManually(false)
-    setRuleFeedback({ text: `Loaded "${result.layout.name}" from JSON successfully.`, tone: 'good' })
+    setRuleFeedback({ text: `Loaded "${result.layout.name}" from pasted JSON for this session.`, tone: 'good' })
+  }
+
+  const handleActivateSession = (playImmediately: boolean) => {
+    if (jsonEditedManually) {
+      const parsed = parseCustomMap(jsonDraft)
+      if (!parsed.layout) {
+        setRuleFeedback({ text: parsed.error ?? 'Failed to parse pasted JSON layout.', tone: 'warn' })
+        return
+      }
+      setLayout(parsed.layout)
+      setJsonEditedManually(false)
+      onActivateForSession(parsed.layout, playImmediately)
+      return
+    }
+    if (!validation.valid) {
+      setRuleFeedback({ text: validation.errors[0] ?? 'Fix layout validation issues first.', tone: 'warn' })
+      return
+    }
+    onActivateForSession(layout, playImmediately)
   }
 
   const tools: { id: CellKind; label: string; sub: string; icon: React.ReactNode; activeCls: string }[] = [
     {
       id: 'wall',
       label: 'Wall',
-      sub: `${layout.walls.length} segments`,
+      sub: `${layout.walls.length} blocks`,
       icon: <Shield className="size-4 text-stone-300" aria-hidden="true" />,
       activeCls: 'border-amber-300 bg-amber-950/50 text-white',
+    },
+    {
+      id: 'barricade',
+      label: 'Terrain Cover',
+      sub: `${(layout.barricades ?? []).length} cover`,
+      icon: <Layers className="size-4 text-amber-200" aria-hidden="true" />,
+      activeCls: 'border-amber-300 bg-amber-950/50 text-white',
+    },
+    {
+      id: 'blue_unit',
+      label: 'Blue Unit',
+      sub: `${blueUnitCount}/${MAX_CUSTOM_UNITS_PER_TEAM}`,
+      icon: <Users className="size-4 text-sky-300" aria-hidden="true" />,
+      activeCls: 'border-sky-400 bg-sky-950/60 text-white',
+    },
+    {
+      id: 'red_unit',
+      label: 'Red Unit',
+      sub: `${redUnitCount}/${MAX_CUSTOM_UNITS_PER_TEAM}`,
+      icon: <Skull className="size-4 text-red-300" aria-hidden="true" />,
+      activeCls: 'border-red-400 bg-red-950/60 text-white',
     },
     {
       id: 'blue_spawn',
@@ -307,14 +443,14 @@ export function MapCreatorModal({
     {
       id: 'crossbow',
       label: 'Outward Crossbows',
-      sub: `${layout.crossbows.length}/${REQUIRED_CROSSBOWS} placed`,
+      sub: `${layout.crossbows.length}/${REQUIRED_CROSSBOWS}`,
       icon: <Crosshair className="size-4 text-red-400" aria-hidden="true" />,
       activeCls: 'border-red-400 bg-red-950/60 text-white',
     },
     {
       id: 'empty',
       label: 'Erase Cell',
-      sub: 'Clear wall / bow',
+      sub: 'Clear cell',
       icon: <Eraser className="size-4 text-white/75" aria-hidden="true" />,
       activeCls: 'border-white/50 bg-white/10 text-white',
     },
@@ -351,30 +487,31 @@ export function MapCreatorModal({
 
         {/* Workspace Body */}
         <div className="grid min-h-0 flex-1 grid-cols-1 gap-5 overflow-y-auto p-4 sm:p-6 lg:grid-cols-12">
-          {/* Left Column: Palette, Metadata & Rules */}
-          <div className="flex flex-col gap-4 lg:col-span-4">
+          {/* Left Column: Terrain/Unit Palette, Metadata & Rules */}
+          <div className="flex flex-col gap-3.5 lg:col-span-4">
             <div>
               <h2 id="map-creator-heading" className="font-display text-2xl font-extrabold tracking-wide text-balance">
                 Siege Map Creator
               </h2>
               <p className="mt-1 text-xs text-white/65">
-                {GRID_COLS} × {GRID_ROWS} tactical grid ({CELL_SIZE_X}m × {CELL_SIZE_Z}m per cell) · Custom layouts join the
-                10 default battlefields in rotation.
+                {GRID_COLS} × {GRID_ROWS} tactical grid ({CELL_SIZE_X}m × {CELL_SIZE_Z}m per cell) · Reloading or exiting
+                the tab deletes custom maps and resets to the original 10 maps.
               </p>
             </div>
 
-            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-1">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-1">
               <label className="block text-xs">
                 <span className="text-white/70">Battlefield Name</span>
                 <input
                   type="text"
+                  autoComplete="off"
                   maxLength={32}
                   value={layout.name}
                   onChange={(e) => {
                     setJsonEditedManually(false)
                     setLayout((prev) => ({ ...prev, name: e.target.value }))
                   }}
-                  className="mt-1 h-9 w-full rounded-lg border border-white/15 bg-white/5 px-3 text-sm text-white focus:border-amber-300 focus:outline-none"
+                  className="mt-1 h-8.5 w-full rounded-lg border border-white/15 bg-white/5 px-3 text-sm text-white focus:border-amber-300 focus:outline-none"
                 />
               </label>
 
@@ -383,13 +520,14 @@ export function MapCreatorModal({
                   <span className="text-white/70">Central City Name</span>
                   <input
                     type="text"
+                    autoComplete="off"
                     maxLength={28}
                     value={layout.cityName}
                     onChange={(e) => {
                       setJsonEditedManually(false)
                       setLayout((prev) => ({ ...prev, cityName: e.target.value }))
                     }}
-                    className="mt-1 h-9 w-full rounded-lg border border-white/15 bg-white/5 px-2.5 text-sm text-white focus:border-amber-300 focus:outline-none"
+                    className="mt-1 h-8.5 w-full rounded-lg border border-white/15 bg-white/5 px-2.5 text-sm text-white focus:border-amber-300 focus:outline-none"
                   />
                 </label>
 
@@ -401,7 +539,7 @@ export function MapCreatorModal({
                       setJsonEditedManually(false)
                       setLayout((prev) => ({ ...prev, biome: e.target.value as MapId }))
                     }}
-                    className="mt-1 h-9 w-full rounded-lg border border-white/15 bg-[#131d31] px-2 text-sm text-white focus:border-amber-300 focus:outline-none"
+                    className="mt-1 h-8.5 w-full rounded-lg border border-white/15 bg-[#131d31] px-2 text-sm text-white focus:border-amber-300 focus:outline-none"
                   >
                     {MAP_IDS.map((id) => (
                       <option key={id} value={id}>
@@ -413,10 +551,10 @@ export function MapCreatorModal({
               </div>
             </div>
 
-            {/* Object Placement Tool Selector */}
+            {/* Terrain & Unit Placement Tool Selector */}
             <div className="space-y-1.5">
-              <p className="text-xs font-semibold text-white/80">Place Siege Objects</p>
-              <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3 lg:grid-cols-1">
+              <p className="text-xs font-semibold text-white/80">Place Terrain, Units &amp; Siege Objectives</p>
+              <div className="grid grid-cols-2 gap-1.5">
                 {tools.map((item) => {
                   const active = tool === item.id
                   return (
@@ -425,17 +563,17 @@ export function MapCreatorModal({
                       type="button"
                       onClick={() => setTool(item.id)}
                       className={cn(
-                        'flex items-center justify-between gap-2 rounded-lg border px-3 py-2 text-left text-xs transition-colors whitespace-nowrap',
+                        'flex items-center justify-between gap-1.5 rounded-lg border px-2.5 py-1.5 text-left text-xs transition-colors whitespace-nowrap',
                         active
                           ? item.activeCls
                           : 'border-white/10 bg-white/[0.03] text-white/80 hover:border-white/25 hover:bg-white/[0.06]',
                       )}
                     >
-                      <span className="flex items-center gap-2 font-semibold">
+                      <span className="flex items-center gap-1.5 truncate font-semibold">
                         {item.icon}
-                        {item.label}
+                        <span className="truncate">{item.label}</span>
                       </span>
-                      <span className="font-mono text-[11px] tabular-nums text-white/60">{item.sub}</span>
+                      <span className="font-mono text-[10px] tabular-nums text-white/55">{item.sub}</span>
                     </button>
                   )
                 })}
@@ -443,7 +581,7 @@ export function MapCreatorModal({
             </div>
 
             {/* Enforced Siege Rules Status */}
-            <div className="space-y-2 border-t border-white/10 pt-3 text-xs">
+            <div className="space-y-2 border-t border-white/10 pt-2.5 text-xs">
               <div className="flex items-center justify-between">
                 <span className="font-semibold text-white/85">Enforced Siege Rules</span>
                 <div className="flex items-center gap-2">
@@ -482,6 +620,12 @@ export function MapCreatorModal({
                 <li className="flex items-center justify-between gap-2">
                   <span>Town Square Circle directly between spawns</span>
                   <span className="font-mono font-semibold text-emerald-300">Active</span>
+                </li>
+                <li className="flex items-center justify-between gap-2">
+                  <span>Live terrain &amp; unit arrays fed to engine</span>
+                  <span className="font-mono font-semibold tabular-nums text-sky-300">
+                    {layout.walls.length + (layout.barricades ?? []).length}T · {(layout.units ?? []).length}U
+                  </span>
                 </li>
               </ul>
 
@@ -529,6 +673,8 @@ export function MapCreatorModal({
                     const isTownSquare = layout.townSquare.col === col && layout.townSquare.row === row
                     const crossbow = crossbowLookup.get(key)
                     const isWall = wallLookup.has(key)
+                    const isBarricade = barricadeLookup.has(key)
+                    const unitTeam = unitLookup.get(key)
 
                     const isRedFortWall =
                       ((row === 0 || row === 3) && col >= 4 && col <= 10 && !(row === 3 && col === 7)) ||
@@ -559,22 +705,22 @@ export function MapCreatorModal({
                           applyCellAction(col, row, false)
                         }}
                         onPointerEnter={() => {
-                          if (pointerDragging && (tool === 'wall' || tool === 'empty')) {
+                          if (pointerDragging && (tool === 'wall' || tool === 'barricade' || tool === 'empty')) {
                             applyCellAction(col, row, true)
                           }
                         }}
                         className={cn(
                           'flex size-[18px] items-center justify-center rounded-[3px] border text-[9px] font-bold transition-colors sm:size-[20px]',
-                          // Base zone tinting
                           'border-white/[0.06] bg-white/[0.03] hover:border-white/40',
                           inCityZone && 'bg-amber-200/[0.05]',
-                          isRedCourtyard && 'bg-red-950/45 border-red-500/20',
-                          isBlueCourtyard && 'bg-sky-950/45 border-sky-500/20',
-                          (isRedFortWall || isBlueFortWall) && 'bg-stone-600/45 border-stone-400/35',
-                          // Highlight valid Town Square corridor when placing Town Square Circle
+                          isRedCourtyard && 'border-red-500/20 bg-red-950/45',
+                          isBlueCourtyard && 'border-sky-500/20 bg-sky-950/45',
+                          (isRedFortWall || isBlueFortWall) && 'border-stone-400/35 bg-stone-600/45',
                           tool === 'town_square' && inValidTownCorridor && 'border-amber-300/45 bg-amber-400/15',
-                          // Placed objects
-                          isWall && 'border-stone-300/70 bg-stone-400/75 text-[#111827]',
+                          isWall && 'border-stone-300/70 bg-stone-400/80 text-[#111827]',
+                          isBarricade && 'border-amber-400/75 bg-amber-700/75 text-amber-100',
+                          unitTeam === 'blue' && 'border-sky-300/80 bg-sky-700/85 text-white',
+                          unitTeam === 'red' && 'border-red-300/80 bg-red-800/85 text-white',
                           isRedBanner && 'border-red-400/70 bg-red-600/40 text-red-100',
                           isBlueSpawn && 'border-sky-300 bg-sky-500 text-[#071324] shadow-sm',
                           isTownSquare && 'border-amber-200 bg-amber-400 text-[#1b1305] shadow-sm',
@@ -589,6 +735,12 @@ export function MapCreatorModal({
                           <OutwardArrowIcon dirX={crossbow.dirX} dirZ={crossbow.dirZ} />
                         ) : isWall ? (
                           '■'
+                        ) : isBarricade ? (
+                          '▬'
+                        ) : unitTeam === 'blue' ? (
+                          '▲'
+                        ) : unitTeam === 'red' ? (
+                          '◆'
                         ) : isRedBanner ? (
                           'R'
                         ) : null}
@@ -599,25 +751,33 @@ export function MapCreatorModal({
               </div>
             </div>
 
-            <div className="mt-2 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-[11px] text-white/65">
-              <span>
-                <strong className="text-red-300">R</strong> Red Keep
-              </span>
-              <span aria-hidden="true">·</span>
-              <span>
-                <strong className="text-red-400">↗</strong> Outward Crossbow
-              </span>
-              <span aria-hidden="true">·</span>
-              <span>
-                <strong className="text-amber-300">T</strong> Town Square Circle
-              </span>
-              <span aria-hidden="true">·</span>
-              <span>
-                <strong className="text-sky-300">B</strong> Blue Ring Spawn
-              </span>
-              <span aria-hidden="true">·</span>
+            <div className="mt-2 flex flex-wrap items-center justify-center gap-x-2.5 gap-y-1 text-[10px] text-white/65">
               <span>
                 <strong className="text-stone-300">■</strong> Wall
+              </span>
+              <span aria-hidden="true">·</span>
+              <span>
+                <strong className="text-amber-300">▬</strong> Cover
+              </span>
+              <span aria-hidden="true">·</span>
+              <span>
+                <strong className="text-sky-300">▲</strong> Blue Unit
+              </span>
+              <span aria-hidden="true">·</span>
+              <span>
+                <strong className="text-red-300">◆</strong> Red Unit
+              </span>
+              <span aria-hidden="true">·</span>
+              <span>
+                <strong className="text-red-400">↗</strong> Crossbow
+              </span>
+              <span aria-hidden="true">·</span>
+              <span>
+                <strong className="text-amber-300">T</strong> Town Sq
+              </span>
+              <span aria-hidden="true">·</span>
+              <span>
+                <strong className="text-sky-300">B</strong> Blue Ring
               </span>
             </div>
           </div>
@@ -651,6 +811,7 @@ export function MapCreatorModal({
 
               <textarea
                 id="custom-map-json"
+                autoComplete="off"
                 spellCheck={false}
                 value={jsonDraft}
                 onChange={(e) => {
@@ -659,40 +820,41 @@ export function MapCreatorModal({
                 }}
                 className="min-h-[220px] flex-1 resize-none rounded-xl border border-white/12 bg-[#080d17] p-3 font-mono text-[11px] leading-relaxed text-amber-100/90 focus:border-amber-300 focus:outline-none"
               />
-              <p className="mt-1.5 text-[11px] text-white/55">
-                Saved custom JSON maps join the 10 default battlefields in automatic round rotation (1/11 equal chance).
+              <p className="mt-1.5 text-[11px] leading-relaxed text-white/60">
+                Reloading the page or exiting/closing the tab deletes all custom maps and resets to the original 10 maps.
+                Copy this JSON to keep your map and paste it back anytime.
               </p>
             </div>
 
             <div className="space-y-2 border-t border-white/10 pt-3">
               <Button
                 type="button"
-                disabled={!validation.valid}
-                onClick={() => onSaveToRotation(layout, true)}
+                disabled={!jsonEditedManually && !validation.valid}
+                onClick={() => handleActivateSession(true)}
                 className="h-10 w-full bg-amber-400 text-sm font-semibold text-[#1a1408] hover:bg-amber-300 disabled:opacity-45 whitespace-nowrap"
               >
                 <Play className="mr-1.5 size-4" aria-hidden="true" />
-                Save &amp; Play Custom Map
+                Play Custom Map (Session)
               </Button>
 
               <div className="flex gap-2">
                 <Button
                   type="button"
                   variant="outline"
-                  disabled={!validation.valid}
-                  onClick={() => onSaveToRotation(layout, false)}
+                  disabled={!jsonEditedManually && !validation.valid}
+                  onClick={() => handleActivateSession(false)}
                   className="h-9 flex-1 border-white/20 bg-white/5 text-xs font-semibold text-white hover:bg-white/10 hover:text-white disabled:opacity-45 whitespace-nowrap"
                 >
                   <Save className="mr-1.5 size-3.5" aria-hidden="true" />
-                  Save to Rotation
+                  Add to Session Rotation
                 </Button>
 
-                {hasSavedCustomMap && (
+                {hasSessionCustomMap && (
                   <Button
                     type="button"
                     variant="outline"
-                    onClick={onRemoveCustomMap}
-                    title="Remove custom map from round rotation"
+                    onClick={onClearSessionMap}
+                    title="Remove custom map from current session"
                     className="h-9 border-red-400/30 bg-red-950/40 px-3 text-xs font-semibold text-red-200 hover:bg-red-950/70 hover:text-red-100 whitespace-nowrap"
                   >
                     <Trash2 className="size-3.5" aria-hidden="true" />

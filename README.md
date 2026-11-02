@@ -31,7 +31,7 @@ Swinging while your shield is up deals 25% less damage. Step into a blue ring in
 Game is inspired by War of Knights
 
 
-Current Version: 0.80
+Current Version: 1.00
 
 Version 0.2----31/10/2026
 Added readme add configurate things that ought to be configured. And included 21 fixes.
@@ -52,4 +52,7 @@ Version 0.7----1/11/2026
 44 issues patched.
 
 Version 0.80----1/11/2026
-Graphics revamp with 4K directional sun shadows, SSAO contact shadows, and HDR Bloom on team banners with full WebGL disposal; added modular grid-based Map Creator with JSON serialization, rule enforcement, and map rotation integration; added dynamic HTML5 Audio background music engine with HUD mute toggle.
+Graphics revamp with 4K directional sun shadows, SSAO contact shadows, and HDR Bloom on team banners with full WebGL disposal; added modular grid-based Map Creator where reloading or exiting/closing the tab deletes all custom maps and resets to the original 10 maps (unless the player copies and pastes their custom JSON layout); added dynamic HTML5 Audio background music engine with HUD mute toggle.
+
+Version 1.00----1/11/2026
+Completed V1 readiness: HUD displays live health, active ammo/medkit resources, current siege phase, round clock, and reinforcement wave timers; Pause overlay strictly halts requestAnimationFrame in the engine to prevent background deaths; Map Creator supports placing baseline terrain (walls, tactical cover) and Blue/Red units fed directly into the live engine; unified Touch controls (for Capacitor/mobile) and Mouse/Keyboard controls onto the same engine action triggers.

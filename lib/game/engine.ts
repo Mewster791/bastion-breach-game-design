@@ -27,9 +27,7 @@ import {
   isInsideFort,
 } from './constants'
 import {
-  clearSavedCustomMap,
-  loadSavedCustomMap,
-  saveCustomMapToStorage,
+  purgeLegacySavedCustomMap,
   type CustomMapLayout,
 } from './custom-map'
 import { createCrossbowModel, createSoldierModel, type CrossbowModel, type SoldierModel, type Team, type Weapon } from './models'
@@ -61,6 +59,8 @@ export interface HudSnapshot {
   healing: number | null
   blocking: boolean
   running: boolean
+  phase: 1 | 2
+  phaseLabel: string
   cityCaptured: boolean
   cityCapture: number
   cityCaptureStatus: CaptureStatus
@@ -80,6 +80,8 @@ export interface HudSnapshot {
   toasts: Toast[]
   elapsed: number
   nextReinforcement: number
+  nextRedWave: number
+  touchMode: boolean
 }
 
 interface Soldier {
@@ -221,6 +223,7 @@ export class GameEngine {
   private dynamic = new THREE.Group()
   private raf = 0
   private timer = 0
+  private loopRunning = false
   private isSoftwareGl: boolean
   private clock = new THREE.Clock()
   private time = 0
@@ -231,11 +234,19 @@ export class GameEngine {
 
   private state: GameState = 'ready'
   private lockFailed = false
+  private touchMode = false
   private keys = new Set<string>()
   private primaryDown = false
   private secondaryDown = false
+  private touchMoveRight = 0
+  private touchMoveForward = 0
+  private touchSprint = false
+  private lookTouchId: number | null = null
+  private lookTouchX = 0
+  private lookTouchY = 0
   private camYaw = Math.PI
   private camPitch = 0.05
+  private redInitialTotal = RED_STATS.count
 
   private soldiers: Soldier[] = []
   private player!: Soldier
@@ -301,7 +312,12 @@ export class GameEngine {
 
   constructor(private container: HTMLDivElement, opts?: { onToggleMute?: () => void }) {
     this.onToggleMuteShortcut = opts?.onToggleMute
-    this.customMap = loadSavedCustomMap()
+    purgeLegacySavedCustomMap()
+    this.customMap = null
+    this.touchMode =
+      typeof window !== 'undefined' &&
+      Boolean(window.matchMedia?.('(pointer: coarse)').matches || navigator.maxTouchPoints > 0)
+    if (this.touchMode) this.lockFailed = true
     this.isSoftwareGl = detectSoftwareGl()
     const initW = Math.max(1, container.clientWidth)
     const initH = Math.max(1, container.clientHeight)
@@ -318,7 +334,7 @@ export class GameEngine {
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
     this.renderer.toneMappingExposure = 1.06
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
-    this.renderer.domElement.className = 'block h-full w-full'
+    this.renderer.domElement.className = 'block h-full w-full touch-none'
     this.renderer.domElement.setAttribute('aria-label', 'Triterra Siege battlefield')
     container.appendChild(this.renderer.domElement)
 
@@ -382,11 +398,10 @@ export class GameEngine {
     this.reset(true)
     this.snapshot = this.buildSnapshot()
     this.bindInput()
-    this.clock.start()
-    this.loop()
+    this.renderSingleFrame()
   }
 
-  // ---------- public API ----------
+  // ---------- public API & unified action triggers ----------
 
   subscribe = (fn: () => void) => {
     this.listeners.add(fn)
@@ -399,51 +414,127 @@ export class GameEngine {
 
   getCustomMap = () => this.customMap
 
-  pauseForOverlay() {
-    this.releaseLock()
-    if (this.state === 'playing') {
-      this.state = 'paused'
+  enableTouchMode = () => {
+    if (!this.touchMode) {
+      this.touchMode = true
+      this.lockFailed = true
+      if (document.pointerLockElement === this.renderer.domElement) document.exitPointerLock()
       this.emit()
     }
   }
 
-  saveCustomMap(layout: CustomMapLayout, playImmediately: boolean) {
-    saveCustomMapToStorage(layout)
+  /** Unified Movement Trigger (Virtual Thumbstick + Keyboard WASD share the same movement solver). */
+  triggerMoveVector = (right: number, forward: number) => {
+    this.touchMoveRight = clamp(right, -1, 1)
+    this.touchMoveForward = clamp(forward, -1, 1)
+  }
+
+  /** Unified Camera Aim Trigger (Mouse look + Touch drag share the exact same yaw/pitch transform). */
+  triggerLookDelta = (dx: number, dy: number) => {
+    if (this.state !== 'playing') return
+    this.camYaw -= dx * 0.0024
+    this.camPitch = clamp(this.camPitch - dy * 0.0022, -0.85, 0.75)
+  }
+
+  /** Unified Primary Action Trigger (Left Mouse Button + Touch Attack/Fire button). */
+  triggerPrimaryAction = (active: boolean) => {
+    if (this.state !== 'playing') {
+      this.primaryDown = false
+      return
+    }
+    this.primaryDown = active
+  }
+
+  /** Unified Secondary Action Trigger (Right Mouse Button / KeyF + Touch Shield/Aim button). */
+  triggerSecondaryAction = (active: boolean) => {
+    if (this.state !== 'playing') {
+      this.secondaryDown = false
+      return
+    }
+    this.secondaryDown = active
+  }
+
+  /** Unified Sprint Trigger (Shift key + Touch Sprint toggle / full-deflection stick). */
+  triggerSprintAction = (active: boolean) => {
+    this.touchSprint = active
+  }
+
+  /** Unified Jump Trigger (Space key + Touch Jump button). */
+  triggerJump = () => {
+    if (this.state !== 'playing') return
+    if (this.onGround) {
+      this.playerVy = PLAYER_STATS.jumpVelocity
+      this.onGround = false
+    }
+  }
+
+  /** Unified Weapon Selection Trigger (Keys 1/2/3 + HUD Weapon Bar tap/click). */
+  triggerWeaponSelect = (w: Weapon) => {
+    if (this.state !== 'playing') return
+    this.selectWeapon(w)
+    this.emit()
+  }
+
+  /** Unified Med Kit Trigger (Keys 4/H/Q + HUD Med Kit tap/click). */
+  triggerMedkit = () => {
+    if (this.state !== 'playing') return
+    this.useMedkit()
+    this.emit()
+  }
+
+  /** Halts the active round and stops requestAnimationFrame in engine.ts to prevent background deaths. */
+  pause = () => {
+    this.releaseLock()
+    this.stopLoop()
+    if (this.state === 'playing') {
+      this.state = 'paused'
+      this.renderSingleFrame()
+      this.emit()
+    }
+  }
+
+  pauseForOverlay() {
+    this.pause()
+  }
+
+  setSessionCustomMap(layout: CustomMapLayout, playImmediately: boolean) {
     this.customMap = layout
     if (playImmediately) {
       this.reset(false, true)
       this.start()
     } else {
-      this.toast(`Saved "${layout.name}" to map rotation`, 'good')
+      this.toast(`Added "${layout.name}" to this session's rotation`, 'good')
+      if (!this.loopRunning) this.renderSingleFrame()
       this.emit()
     }
   }
 
-  removeCustomMap() {
-    clearSavedCustomMap()
+  clearSessionCustomMap() {
     this.customMap = null
     if (this.world.isCustom && this.state === 'ready') {
       this.reset(true, false)
+      this.renderSingleFrame()
     }
-    this.toast('Removed custom layout from map rotation', 'info')
+    this.toast('Removed custom map from this session', 'info')
     this.emit()
   }
 
   start() {
     if (this.state === 'victory' || this.state === 'defeat') this.reset(false)
     this.state = 'playing'
-    this.requestLock()
+    if (!this.touchMode) this.requestLock()
+    this.startLoop()
     this.emit()
   }
 
   restart() {
+    this.stopLoop()
     this.reset(false)
     this.start()
   }
 
   dispose() {
-    cancelAnimationFrame(this.raf)
-    window.clearTimeout(this.timer)
+    this.stopLoop()
     this.unbindInput()
     if (document.pointerLockElement === this.renderer.domElement) document.exitPointerLock()
     for (const e of this.effects) {
@@ -493,6 +584,8 @@ export class GameEngine {
       this.sun.shadow.map = null
     }
 
+    this.customMap = null
+    purgeLegacySavedCustomMap()
     if (this.world) this.world.dispose()
     if (this.envTex) this.envTex.dispose()
     this.renderer.dispose()
@@ -588,12 +681,20 @@ export class GameEngine {
       ally.laneX = laneGroup === 0 ? (Math.random() - 0.5) * 4 : (laneGroup === 1 ? -1 : 1) * (4 + Math.random() * 4)
     }
 
+    // Spawn custom Map Creator Blue vanguard units directly into the live battlefield
+    this.world.customBlueUnits.forEach((pos, idx) => {
+      const ally = this.createSoldier('blue', pos.clone())
+      const laneGroup = idx % 3
+      ally.laneX = laneGroup === 0 ? 0 : (laneGroup === 1 ? -1 : 1) * 5
+    })
+
     for (const postDef of this.world.redPosts) {
       const s = this.createSoldier('red', postDef.pos.clone())
       s.post = postDef.pos
       s.leash = postDef.leash
       s.yaw = 0
     }
+    this.redInitialTotal = this.world.redPosts.length
 
     for (const [x, y, z, dx, dz] of this.world.crossbowDefs) {
       const model = createCrossbowModel()
@@ -675,7 +776,7 @@ export class GameEngine {
     return s
   }
 
-  // ---------- input ----------
+  // ---------- input (Mouse/Keyboard + Capacitor/Web Touch mapped to unified triggers) ----------
 
   private onKeyDown = (e: KeyboardEvent) => {
     const activeTag = (document.activeElement as HTMLElement | null)?.tagName
@@ -691,33 +792,29 @@ export class GameEngine {
       return
     }
     if (this.state !== 'playing') return
-    if (e.code === 'Escape' && this.lockFailed) {
-      this.state = 'paused'
-      this.emit()
+    if (e.code === 'Escape') {
+      this.pause()
       return
     }
     this.keys.add(e.code)
     if (e.repeat) return
     switch (e.code) {
       case 'Digit1':
-        this.selectWeapon('sword')
+        this.triggerWeaponSelect('sword')
         break
       case 'Digit2':
-        this.selectWeapon('gun')
+        this.triggerWeaponSelect('gun')
         break
       case 'Digit3':
-        this.selectWeapon('bow')
+        this.triggerWeaponSelect('bow')
         break
       case 'Digit4':
       case 'KeyH':
       case 'KeyQ':
-        this.useMedkit()
+        this.triggerMedkit()
         break
       case 'Space':
-        if (this.onGround) {
-          this.playerVy = PLAYER_STATS.jumpVelocity
-          this.onGround = false
-        }
+        this.triggerJump()
         break
     }
   }
@@ -728,34 +825,69 @@ export class GameEngine {
 
   private onMouseDown = (e: MouseEvent) => {
     if (this.state !== 'playing') return
-    if (e.button === 0) this.primaryDown = true
-    if (e.button === 2) this.secondaryDown = true
-    if (!this.lockFailed && document.pointerLockElement !== this.renderer.domElement) this.requestLock()
+    if (e.button === 0) this.triggerPrimaryAction(true)
+    if (e.button === 2) this.triggerSecondaryAction(true)
+    if (!this.touchMode && !this.lockFailed && document.pointerLockElement !== this.renderer.domElement) {
+      this.requestLock()
+    }
   }
 
   private onMouseUp = (e: MouseEvent) => {
-    if (e.button === 0) this.primaryDown = false
-    if (e.button === 2) this.secondaryDown = false
+    if (e.button === 0) this.triggerPrimaryAction(false)
+    if (e.button === 2) this.triggerSecondaryAction(false)
   }
 
   private onMouseMove = (e: MouseEvent) => {
     if (this.state !== 'playing') return
     const locked = document.pointerLockElement === this.renderer.domElement
     if (!locked && !this.lockFailed) return
-    this.camYaw -= e.movementX * 0.0024
-    this.camPitch = clamp(this.camPitch - e.movementY * 0.0022, -0.85, 0.75)
+    this.triggerLookDelta(e.movementX, e.movementY)
+  }
+
+  private onCanvasTouchStart = (e: TouchEvent) => {
+    this.enableTouchMode()
+    if (this.state !== 'playing') return
+    if (this.lookTouchId !== null) return
+    const touch = e.changedTouches[0]
+    if (!touch) return
+    e.preventDefault()
+    this.lookTouchId = touch.identifier
+    this.lookTouchX = touch.clientX
+    this.lookTouchY = touch.clientY
+  }
+
+  private onCanvasTouchMove = (e: TouchEvent) => {
+    if (this.state !== 'playing' || this.lookTouchId === null) return
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      const t = e.changedTouches[i]
+      if (t.identifier === this.lookTouchId) {
+        e.preventDefault()
+        const dx = t.clientX - this.lookTouchX
+        const dy = t.clientY - this.lookTouchY
+        this.lookTouchX = t.clientX
+        this.lookTouchY = t.clientY
+        this.triggerLookDelta(dx * 1.45, dy * 1.35)
+        break
+      }
+    }
+  }
+
+  private onCanvasTouchEnd = (e: TouchEvent) => {
+    if (this.lookTouchId === null) return
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      if (e.changedTouches[i].identifier === this.lookTouchId) {
+        this.lookTouchId = null
+        break
+      }
+    }
   }
 
   private onContextMenu = (e: Event) => e.preventDefault()
 
   private onLockChange = () => {
     const locked = document.pointerLockElement === this.renderer.domElement
-    if (!locked && this.state === 'playing' && !this.lockFailed) {
-      this.state = 'paused'
-      this.primaryDown = false
-      this.secondaryDown = false
-      this.keys.clear()
-      this.emit()
+    if (!locked && this.state === 'playing' && !this.lockFailed && !this.touchMode) {
+      this.pause()
     }
   }
 
@@ -763,10 +895,19 @@ export class GameEngine {
     this.lockFailed = true
   }
 
+  private onVisibilityChange = () => {
+    if (document.hidden && this.state === 'playing') {
+      this.pause()
+    }
+  }
+
   private onBlur = () => {
     this.keys.clear()
     this.primaryDown = false
     this.secondaryDown = false
+    this.touchMoveRight = 0
+    this.touchMoveForward = 0
+    this.lookTouchId = null
   }
 
   private onResize = () => {
@@ -787,6 +928,27 @@ export class GameEngine {
     if (this.bloomPass) {
       this.bloomPass.resolution.set(w, h)
     }
+    if (!this.loopRunning) {
+      this.renderSingleFrame()
+    }
+  }
+
+  private onPageExit = () => {
+    this.stopLoop()
+    this.customMap = null
+    purgeLegacySavedCustomMap()
+  }
+
+  private onPageShow = (e: PageTransitionEvent) => {
+    if (e.persisted) {
+      this.stopLoop()
+      this.customMap = null
+      purgeLegacySavedCustomMap()
+      this.state = 'ready'
+      this.reset(true, false)
+      this.renderSingleFrame()
+      this.emit()
+    }
   }
 
   private bindInput() {
@@ -797,7 +959,16 @@ export class GameEngine {
     window.addEventListener('mousemove', this.onMouseMove)
     window.addEventListener('blur', this.onBlur)
     window.addEventListener('resize', this.onResize)
-    this.renderer.domElement.addEventListener('contextmenu', this.onContextMenu)
+    window.addEventListener('pagehide', this.onPageExit)
+    window.addEventListener('beforeunload', this.onPageExit)
+    window.addEventListener('pageshow', this.onPageShow)
+    document.addEventListener('visibilitychange', this.onVisibilityChange)
+    const canvas = this.renderer.domElement
+    canvas.addEventListener('contextmenu', this.onContextMenu)
+    canvas.addEventListener('touchstart', this.onCanvasTouchStart, { passive: false })
+    canvas.addEventListener('touchmove', this.onCanvasTouchMove, { passive: false })
+    canvas.addEventListener('touchend', this.onCanvasTouchEnd)
+    canvas.addEventListener('touchcancel', this.onCanvasTouchEnd)
     this.container.addEventListener('contextmenu', this.onContextMenu)
     document.addEventListener('pointerlockchange', this.onLockChange)
     document.addEventListener('pointerlockerror', this.onLockError)
@@ -811,7 +982,16 @@ export class GameEngine {
     window.removeEventListener('mousemove', this.onMouseMove)
     window.removeEventListener('blur', this.onBlur)
     window.removeEventListener('resize', this.onResize)
-    this.renderer.domElement.removeEventListener('contextmenu', this.onContextMenu)
+    window.removeEventListener('pagehide', this.onPageExit)
+    window.removeEventListener('beforeunload', this.onPageExit)
+    window.removeEventListener('pageshow', this.onPageShow)
+    document.removeEventListener('visibilitychange', this.onVisibilityChange)
+    const canvas = this.renderer.domElement
+    canvas.removeEventListener('contextmenu', this.onContextMenu)
+    canvas.removeEventListener('touchstart', this.onCanvasTouchStart)
+    canvas.removeEventListener('touchmove', this.onCanvasTouchMove)
+    canvas.removeEventListener('touchend', this.onCanvasTouchEnd)
+    canvas.removeEventListener('touchcancel', this.onCanvasTouchEnd)
     this.container.removeEventListener('contextmenu', this.onContextMenu)
     document.removeEventListener('pointerlockchange', this.onLockChange)
     document.removeEventListener('pointerlockerror', this.onLockError)
@@ -823,6 +1003,16 @@ export class GameEngine {
     this.toasts.push({ id: ++this.toastId, text, tone, expires: this.time + 3.2 })
     if (this.toasts.length > 3) this.toasts.shift()
     this.emit()
+  }
+
+  private isSprinting() {
+    const stickMag = Math.hypot(this.touchMoveRight, this.touchMoveForward)
+    return (
+      this.keys.has('ShiftLeft') ||
+      this.keys.has('ShiftRight') ||
+      this.touchSprint ||
+      stickMag > 0.84
+    )
   }
 
   private buildSnapshot(): HudSnapshot {
@@ -844,14 +1034,16 @@ export class GameEngine {
       medkits: this.medkits,
       healing: this.healRemaining > 0 ? clamp(this.healTime / PLAYER_STATS.healDuration, 0, 1) : null,
       blocking: this.player.blocking,
-      running: this.keys.has('ShiftLeft') || this.keys.has('ShiftRight'),
+      running: this.isSprinting() && !this.player.blocking,
+      phase: this.cityCaptured ? 2 : 1,
+      phaseLabel: this.cityCaptured ? 'Red Fort Assault' : 'Town Square Siege',
       cityCaptured: this.cityCaptured,
       cityCapture: this.cityCapture,
       cityCaptureStatus: this.cityCaptureStatus,
       capture: this.capture,
       captureStatus: this.captureStatus,
       redAlive: reds,
-      redTotal: RED_STATS.count,
+      redTotal: this.redInitialTotal,
       blueAlive: blues,
       crossbowsAlive: this.crossbows.filter((c) => c.alive).length,
       crossbowsTotal: this.crossbows.length,
@@ -863,7 +1055,9 @@ export class GameEngine {
       killAt: this.killAt,
       toasts: this.toasts.map(({ id, text, tone }) => ({ id, text, tone })),
       elapsed: this.elapsed,
-      nextReinforcement: Math.ceil(this.reinforceTimer),
+      nextReinforcement: Math.max(0, Math.ceil(this.reinforceTimer)),
+      nextRedWave: Math.max(0, Math.ceil(this.redReinforceTimer)),
+      touchMode: this.touchMode,
     }
   }
 
@@ -873,9 +1067,45 @@ export class GameEngine {
     for (const fn of this.listeners) fn()
   }
 
-  // ---------- main loop ----------
+  // ---------- main loop (strictly stopped when paused/ready/ended) ----------
+
+  private renderScene(dt: number) {
+    if (this.composer && !this.isSoftwareGl) {
+      this.composer.render(dt)
+    } else {
+      this.renderer.render(this.scene, this.camera)
+    }
+  }
+
+  private renderSingleFrame() {
+    if (!this.world || !this.player) return
+    this.updateVisuals(0)
+    this.renderScene(0)
+  }
+
+  private startLoop() {
+    if (this.loopRunning || this.state !== 'playing') return
+    this.loopRunning = true
+    this.clock.start()
+    this.clock.getDelta()
+    this.raf = requestAnimationFrame(this.loop)
+  }
+
+  private stopLoop() {
+    this.loopRunning = false
+    if (this.raf) {
+      cancelAnimationFrame(this.raf)
+      this.raf = 0
+    }
+    if (this.timer) {
+      window.clearTimeout(this.timer)
+      this.timer = 0
+    }
+    this.clock.stop()
+  }
 
   private afterSoftwareDraw(cb: () => void) {
+    if (!this.loopRunning || this.state !== 'playing') return
     const gl = this.renderer.getContext() as WebGL2RenderingContext | null
     if (!gl || typeof gl.fenceSync !== 'function') {
       this.raf = requestAnimationFrame(cb)
@@ -884,6 +1114,10 @@ export class GameEngine {
     const sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0)
     gl.flush()
     const poll = () => {
+      if (!this.loopRunning || this.state !== 'playing') {
+        if (sync) gl.deleteSync(sync)
+        return
+      }
       const status = sync && gl.getSyncParameter(sync, gl.SYNC_STATUS)
       if (status === gl.UNSIGNALED) {
         this.timer = window.setTimeout(poll, 5)
@@ -896,20 +1130,27 @@ export class GameEngine {
   }
 
   private loop = () => {
+    if (!this.loopRunning || this.state !== 'playing') {
+      this.loopRunning = false
+      this.raf = 0
+      return
+    }
     const dt = Math.min(this.clock.getDelta(), 0.05)
     this.time += dt
-    if (this.state === 'playing') this.update(dt)
-    this.updateVisuals(dt)
-    if (this.composer && !this.isSoftwareGl) {
-      this.composer.render(dt)
-    } else {
-      this.renderer.render(this.scene, this.camera)
+    this.update(dt)
+    if (!this.loopRunning || this.state !== 'playing') {
+      this.renderSingleFrame()
+      this.emit()
+      return
     }
+    this.updateVisuals(dt)
+    this.renderScene(dt)
     if (this.time - this.lastEmit > 0.1) {
       const before = this.toasts.length
       this.toasts = this.toasts.filter((t) => t.expires > this.time)
       if (this.state === 'playing' || before !== this.toasts.length) this.emit()
     }
+    if (!this.loopRunning || this.state !== 'playing') return
     if (this.isSoftwareGl) this.afterSoftwareDraw(this.loop)
     else this.raf = requestAnimationFrame(this.loop)
   }
@@ -1004,34 +1245,27 @@ export class GameEngine {
     p.aimPitch = this.camPitch
 
     p.blocking = p.weapon === 'sword' && (this.secondaryDown || this.keys.has('KeyF'))
-    const running = (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight')) && !p.blocking
+    const running = this.isSprinting() && !p.blocking
     const speed = p.blocking ? PLAYER_STATS.blockSpeed : running ? PLAYER_STATS.runSpeed : PLAYER_STATS.walkSpeed
 
     const fx = Math.sin(this.camYaw)
     const fz = Math.cos(this.camYaw)
-    let mx = 0
-    let mz = 0
-    if (this.keys.has('KeyW') || this.keys.has('ArrowUp')) {
-      mx += fx
-      mz += fz
-    }
-    if (this.keys.has('KeyS') || this.keys.has('ArrowDown')) {
-      mx -= fx
-      mz -= fz
-    }
-    if (this.keys.has('KeyD') || this.keys.has('ArrowRight')) {
-      mx -= fz
-      mz += fx
-    }
-    if (this.keys.has('KeyA') || this.keys.has('ArrowLeft')) {
-      mx += fz
-      mz -= fx
-    }
-    const len = Math.hypot(mx, mz)
-    if (len > 0) {
-      p.pos.x += (mx / len) * speed * dt
-      p.pos.z += (mz / len) * speed * dt
-      p.animSpeed = speed
+    const kbdForward =
+      (this.keys.has('KeyW') || this.keys.has('ArrowUp') ? 1 : 0) -
+      (this.keys.has('KeyS') || this.keys.has('ArrowDown') ? 1 : 0)
+    const kbdRight =
+      (this.keys.has('KeyD') || this.keys.has('ArrowRight') ? 1 : 0) -
+      (this.keys.has('KeyA') || this.keys.has('ArrowLeft') ? 1 : 0)
+    const moveForward = clamp(kbdForward + this.touchMoveForward, -1, 1)
+    const moveRight = clamp(kbdRight + this.touchMoveRight, -1, 1)
+    const mag = Math.min(1, Math.hypot(moveForward, moveRight))
+    if (mag > 0.02) {
+      const mx = fx * moveForward - fz * moveRight
+      const mz = fz * moveForward + fx * moveRight
+      const len = Math.hypot(mx, mz) || 1
+      p.pos.x += (mx / len) * speed * mag * dt
+      p.pos.z += (mz / len) * speed * mag * dt
+      p.animSpeed = speed * mag
     } else {
       p.animSpeed = 0
     }
@@ -1251,6 +1485,8 @@ export class GameEngine {
           this.state = 'defeat'
           this.toast('You have fallen', 'bad')
           this.releaseLock()
+          this.stopLoop()
+          this.renderSingleFrame()
         }
       }
       this.emit()
@@ -1289,6 +1525,10 @@ export class GameEngine {
   private releaseLock() {
     this.primaryDown = false
     this.secondaryDown = false
+    this.touchMoveRight = 0
+    this.touchMoveForward = 0
+    this.touchSprint = false
+    this.lookTouchId = null
     this.keys.clear()
     if (document.pointerLockElement === this.renderer.domElement) document.exitPointerLock()
   }
@@ -1898,6 +2138,8 @@ export class GameEngine {
       this.state = 'victory'
       this.toast('The red fort is yours!', 'good')
       this.releaseLock()
+      this.stopLoop()
+      this.renderSingleFrame()
     }
   }
 

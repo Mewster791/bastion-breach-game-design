@@ -469,6 +469,7 @@ export interface WorldRefs {
   colliders: Collider[]
   cityAvenues: number[]
   redPosts: RedPostDef[]
+  customBlueUnits: THREE.Vector3[]
   playerSpawnPos: THREE.Vector3
   blueSpawnOffsets: [number, number][]
   crossbowDefs: [number, number, number, number, number][]
@@ -1112,6 +1113,30 @@ export function buildWorld(
       addBlock(cityGroup, stoneMat, wallW, wallH, wallD, wx, wallH / 2, wz, 3.5, true)
       addBlock(cityGroup, stoneMat, wallW + 0.35, 0.65, wallD + 0.35, wx, wallH + 0.32, wz, 3.5, false)
     }
+
+    // Render custom baseline field terrain cover (timber & stone tactical barricades)
+    const barW = CELL_SIZE_X - 1.2
+    const barD = 2.4
+    const barH = 1.35
+    for (const bCell of customLayout.barricades ?? []) {
+      const { x: bx, z: bz } = gridToWorld(bCell.col, bCell.row)
+      addBlock(cityGroup, stoneMat, barW, 0.7, barD, bx, 0.35, bz, 2.5, true)
+      addBlock(cityGroup, woodMat, barW - 0.3, 0.65, barD * 0.65, bx, 1.02, bz, 2.0, false)
+      for (const sx of [-barW * 0.36, 0, barW * 0.36]) {
+        const stake = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.12, 1.65, 6), darkWoodMat)
+        stake.position.set(bx + sx, 0.85, bz)
+        stake.rotation.x = 0.22
+        stake.castShadow = true
+        cityGroup.add(stake)
+      }
+      colliders.push({
+        box: new THREE.Box3(
+          new THREE.Vector3(bx - barW / 2, 0, bz - barD / 2),
+          new THREE.Vector3(bx + barW / 2, barH, bz + barD / 2),
+        ),
+        low: true,
+      })
+    }
   } else {
     // Place 16 multi-part buildings cleanly inside the 8 City Districts (leaving all 3 avenues & 3 cross-streets clear!)
     const innerBlocks: [number, number, number, number, number][] = [
@@ -1647,6 +1672,21 @@ export function buildWorld(
     }
   }
 
+  // Feed custom Map Creator unit array directly into the live garrison & vanguard spawns
+  const customBlueUnits: THREE.Vector3[] = []
+  if (customLayout?.units) {
+    for (const u of customLayout.units) {
+      const { x: ux, z: uz } = gridToWorld(u.col, u.row)
+      const pt = new THREE.Vector3(ux, 0, uz)
+      if (colliders.some((c) => !c.low && c.box.containsPoint(new THREE.Vector3(ux, 0.8, uz)))) continue
+      if (u.team === 'red') {
+        redPosts.push({ pos: pt, leash: 28 })
+      } else {
+        customBlueUnits.push(pt)
+      }
+    }
+  }
+
   const playerSpawnPos = customLayout
     ? new THREE.Vector3(resupplyPosition.x, 0, Math.min(BLUE_Z + 18, resupplyPosition.z - 4))
     : new THREE.Vector3(0, 0, BLUE_Z - 10)
@@ -1697,6 +1737,7 @@ export function buildWorld(
     colliders,
     cityAvenues,
     redPosts,
+    customBlueUnits,
     playerSpawnPos,
     blueSpawnOffsets,
     crossbowDefs,
